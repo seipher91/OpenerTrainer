@@ -2627,15 +2627,21 @@ function ApplyTalentString(str, name)
         return
     end
     Print(L.TALENTS_IMPORTED:format(name))
-    -- L'attivazione richiede il configID appena creato: cercalo per nome
-    C_Timer.After(0.5, function()
-        local okLoad = pcall(function()
+    -- L'attivazione richiede il configID appena creato, ma il salvataggio
+    -- del loadout è ASINCRONO: la lista può non essere ancora aggiornata.
+    -- Retry con backoff invece di un singolo tentativo.
+    local attempts = 0
+    local function TryLoad()
+        attempts = attempts + 1
+        local found = false
+        pcall(function()
             local specID = GetCurrentSpecID()
             local ids = C_ClassTalents.GetConfigIDsBySpecID
                 and C_ClassTalents.GetConfigIDsBySpecID(specID)
             for _, id in ipairs(ids or {}) do
                 local info = C_Traits.GetConfigInfo(id)
                 if info and info.name == name then
+                    found = true
                     C_ClassTalents.LoadConfig(id, true)
                     if C_ClassTalents.UpdateLastSelectedSavedConfigID then
                         pcall(C_ClassTalents.UpdateLastSelectedSavedConfigID, specID, id)
@@ -2644,10 +2650,15 @@ function ApplyTalentString(str, name)
                     return
                 end
             end
-            error("config not found")
         end)
-        if not okLoad then Print(L.TALENTS_APPLY_FAIL:format("load")) end
-    end)
+        if found then return end
+        if attempts < 6 then
+            C_Timer.After(0.7, TryLoad)
+        else
+            Print(L.TALENTS_APPLY_FAIL:format("load"))
+        end
+    end
+    C_Timer.After(0.5, TryLoad)
 end
 
 -- ---------------------------------------------------------------------------
