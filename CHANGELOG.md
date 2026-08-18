@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.3 (2026-08-18)
+
+### Fixed
+- Passive proc markers whose spell variant is not flagged passive (e.g. Reaver's Mark 442624 vs talent node 442679) are now detected by matching the names of passive talent nodes, and removed from imports and saved openers.
+- Untalented detection now works for steps whose spellID is an unmapped variant of a talent node (e.g. Red Moon): if an unselected node shares the spell's name, the step is shown red.
+
+### Changed
+- Guardian Druid presets now include 12.1 talent strings (ST Druid of the Claw; AoE Elune's Chosen for the Elune preset) and the "12.1 - ST of Claw" preset was renamed to "12.1 - ST Druid of the Claw". Re-import the preset from the Presets menu to get the talents.
+
 ## 1.2.2 (2026-08-18)
 
 ### Added
