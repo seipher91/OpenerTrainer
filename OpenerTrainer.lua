@@ -4,7 +4,7 @@
 
 local ADDON_NAME = ...
 
-local VERSION = "1.2.3"
+local VERSION = "1.2.4"
 local ICON_PATH = "Interface\\AddOns\\OpenerTrainer\\Media\\icon"
 local ICON_FALLBACK = "Interface\\Icons\\INV_Misc_QuestionMark"
 local ICON_INFO = "Interface\\Icons\\INV_Misc_Note_01"

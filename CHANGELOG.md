@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.4 (2026-08-18)
+
+### Fixed
+- Untalented detection: an unselected talent node now vetoes Blizzard's "known" APIs, which report unselected hero spell variants (e.g. Red Moon) as known and present in the spellbook. Only `IsPlayerSpell`/`C_SpellBook.IsSpellKnown` can override the veto, so baseline spells stay white.
+- Talent map hardened against Secret Value spell names; build errors are printed to chat instead of failing silently.
+- The editor SEQUENCE column now shows untalented steps in red (like tracker, bar and spell picker) and refreshes on talent changes while open.
+- Applying a talent loadout no longer prints a spurious "(load)" error on the first click: the loadout save is asynchronous, activation now retries with backoff.
+
+### Changed
+- Guardian "12.1 - ST Elune's Chosen" preset: verified 12.1 talent string.
+- New diagnostic command: `/opener spell <id>`.
+
 ## 1.2.3 (2026-08-18)
 
 ### Fixed
