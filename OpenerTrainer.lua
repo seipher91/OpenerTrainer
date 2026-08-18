@@ -345,9 +345,11 @@ end
 -- ---------------------------------------------------------------------------
 
 local talentSelected -- nil = mappa non disponibile (fail-open)
+local passiveTalentNames -- nomi (lower) dei nodi talento PASSIVI della spec
 
 local function BuildTalentMap()
     local map = {}
+    local pnames = {}
     local ok = pcall(function()
         local configID = C_ClassTalents and C_ClassTalents.GetActiveConfigID
             and C_ClassTalents.GetActiveConfigID()
@@ -373,6 +375,16 @@ local function BuildTalentMap()
                             elseif map[sid] == nil then
                                 map[sid] = false
                             end
+                            -- le guide marcano i proc con ID varianti "instant"
+                            -- (es. Reaver's Mark): il nome del nodo passivo
+                            -- permette di riconoscerli e scartarli
+                            if C_Spell and C_Spell.IsSpellPassive then
+                                local okP, pv = pcall(C_Spell.IsSpellPassive, sid)
+                                if okP and pv then
+                                    local nm = GetSpellName(sid)
+                                    if nm then pnames[nm:lower()] = true end
+                                end
+                            end
                         end
                     end
                 end
@@ -380,6 +392,7 @@ local function BuildTalentMap()
         end
     end)
     talentSelected = ok and map or nil
+    passiveTalentNames = ok and pnames or nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -2398,11 +2411,31 @@ local function SpellExists(id)
     return ok and type(info) == "table" and info.name ~= nil
 end
 
+-- Conosciuta DAVVERO dal personaggio (niente fail-open, a differenza di StepKnown)
+local function SpellPositivelyKnown(id)
+    local function try(fn, x)
+        if type(fn) ~= "function" then return false end
+        local ok, r = pcall(fn, x)
+        return (ok and r) and true or false
+    end
+    if try(IsSpellKnownOrOverridesKnown, id) then return true end
+    if try(IsPlayerSpell, id) then return true end
+    if C_SpellBook and try(C_SpellBook.IsSpellKnown, id) then return true end
+    return false
+end
+
 -- Le passive (es. Inertia) non sono castabili: mai negli step. Fail-open.
+-- Alcuni marker delle guide usano ID varianti NON flaggate passive (es.
+-- Reaver's Mark 442624 vs nodo 442679): se il nome coincide con un nodo
+-- talento passivo e la spell non è conosciuta dal pg, è un marker.
 local function SpellIsPassive(id)
     if C_Spell and C_Spell.IsSpellPassive then
         local ok, p = pcall(C_Spell.IsSpellPassive, id)
-        if ok then return p == true end
+        if ok and p == true then return true end
+    end
+    if type(passiveTalentNames) == "table" and not SpellPositivelyKnown(id) then
+        local nm = GetSpellName(id)
+        if nm and passiveTalentNames[nm:lower()] then return true end
     end
     return false
 end
@@ -2724,10 +2757,6 @@ ev:SetScript("OnEvent", function(_, event, arg1, _, arg3)
         if tracker and tracker.editBtn then
             tracker.editBtn:SetScript("OnClick", ToggleEditor)
         end
-        local pruned = PrunePassiveSteps()
-        if pruned > 0 then
-            Print(("|cff0cd29d%d|r passive step(s) removed from saved openers"):format(pruned))
-        end
         ResetRun()
         Tracker_Refresh()
         C_Timer.After(0, function()
@@ -2739,6 +2768,12 @@ ev:SetScript("OnEvent", function(_, event, arg1, _, arg3)
             pcall(ev.RegisterEvent, ev, "TRAIT_CONFIG_UPDATED")
             SeedDefaults()
             BuildTalentMap()
+            -- DOPO BuildTalentMap: il riconoscimento dei marker passivi
+            -- per nome richiede la mappa dei nodi
+            local pruned = PrunePassiveSteps()
+            if pruned > 0 then
+                Print(("|cff0cd29d%d|r passive step(s) removed from saved openers"):format(pruned))
+            end
             Tracker_Refresh()
         end)
         Print(L.LOADED:format(VERSION))
