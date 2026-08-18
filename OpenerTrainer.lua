@@ -2357,6 +2357,15 @@ local function SpellExists(id)
     return ok and type(info) == "table" and info.name ~= nil
 end
 
+-- Le passive (es. Inertia) non sono castabili: mai negli step. Fail-open.
+local function SpellIsPassive(id)
+    if C_Spell and C_Spell.IsSpellPassive then
+        local ok, p = pcall(C_Spell.IsSpellPassive, id)
+        if ok then return p == true end
+    end
+    return false
+end
+
 -- Ritorna (opener, skipped) oppure nil se la stringa non è valida.
 function ImportOpener(str)
     str = (str or ""):gsub("%s+", "")
@@ -2378,7 +2387,7 @@ function ImportOpener(str)
         elseif marker == "S" then
             flush()
             local id = tonumber(payload)
-            if id and SpellExists(id) then
+            if id and SpellExists(id) and not SpellIsPassive(id) then
                 cur = { kind = "spell", spellID = id, count = 1 }
             else
                 skipped = skipped + 1
@@ -2400,6 +2409,26 @@ function ImportOpener(str)
         steps = steps,
         talents = talents,
     }, skipped
+end
+
+-- Bonifica una-tantum: toglie le passive già finite negli opener salvati
+-- (i preset dalle timeline icy-veins includevano proc come Inertia)
+local function PrunePassiveSteps()
+    if not (db and db.openers) then return 0 end
+    local removed = 0
+    for _, list in pairs(db.openers) do
+        for _, op in ipairs(list) do
+            local steps = op.steps or {}
+            for i = #steps, 1, -1 do
+                local s = steps[i]
+                if s.kind ~= "info" and s.spellID and SpellIsPassive(s.spellID) then
+                    table.remove(steps, i)
+                    removed = removed + 1
+                end
+            end
+        end
+    end
+    return removed
 end
 
 -- ---------------------------------------------------------------------------
@@ -2653,6 +2682,10 @@ ev:SetScript("OnEvent", function(_, event, arg1, _, arg3)
         end
         if tracker and tracker.editBtn then
             tracker.editBtn:SetScript("OnClick", ToggleEditor)
+        end
+        local pruned = PrunePassiveSteps()
+        if pruned > 0 then
+            Print(("|cff0cd29d%d|r passive step(s) removed from saved openers"):format(pruned))
         end
         ResetRun()
         Tracker_Refresh()
