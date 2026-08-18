@@ -2016,6 +2016,7 @@ function Editor_RefreshSteps()
         if step.kind == "info" then
             row.icon:SetTexture(step.icon or ICON_INFO)
             row.label:SetText("|cff55dd55[i]|r " .. (step.label or "Info"))
+            row.label:SetTextColor(1, 1, 1, 0.85)
         else
             row.icon:SetTexture(GetSpellIcon(step.spellID))
             local txt = i .. ". " .. GetSpellName(step.spellID)
@@ -2023,6 +2024,12 @@ function Editor_RefreshSteps()
                 txt = txt .. " |cffffee55x" .. step.count .. "|r"
             end
             row.label:SetText(txt)
+            -- rosso anche qui, come in tracker/barra/picker
+            if not StepKnown(step.spellID) then
+                row.label:SetTextColor(1, 0.35, 0.35, 1)
+            else
+                row.label:SetTextColor(1, 1, 1, 0.85)
+            end
         end
     end
     for i = #steps + 1, #editorStepRows do editorStepRows[i]:Hide() end
@@ -2859,6 +2866,7 @@ ev:SetScript("OnEvent", function(_, event, arg1, _, arg3)
         if editor and editor:IsShown() then
             knownSpells = BuildPickerPool()
             Editor_RefreshSpells()
+            Editor_RefreshSteps()
         end
     elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
         if arg1 and arg1 ~= "player" then return end
