@@ -1345,7 +1345,8 @@ end
 -- ---------------------------------------------------------------------------
 
 local editor
-local EDITOR_W, EDITOR_H = 780, 500
+-- 860 = minimo: sotto, la label dell'auto-reset finisce sopra i bottoni
+local EDITOR_W, EDITOR_H = 860, 500
 local ED_SIDEBAR_W = 150
 local ED_HEADER_H = 40
 local ED_FOOTER_H = 44
@@ -1981,7 +1982,7 @@ end
 
 local function BuildEditor()
     editor = CreateFrame("Frame", "OpenerTrainerEditor", UIParent)
-    editor:SetSize(EDITOR_W, EDITOR_H)
+    editor:SetSize(db.editorW or EDITOR_W, db.editorH or EDITOR_H)
     editor:SetPoint("CENTER")
     editor:SetFrameStrata("DIALOG")
     editor:SetMovable(true)
@@ -2005,8 +2006,13 @@ local function BuildEditor()
     headerLine:SetPoint("BOTTOMRIGHT")
     headerLine:SetHeight(1)
 
+    local titleIcon = header:CreateTexture(nil, "ARTWORK")
+    titleIcon:SetSize(22, 22)
+    titleIcon:SetPoint("LEFT", 12, 0)
+    titleIcon:SetTexture(ICON_PATH)
+
     editor.title = EFont(header, 16, 1)
-    editor.title:SetPoint("LEFT", 14, 0)
+    editor.title:SetPoint("LEFT", titleIcon, "RIGHT", 8, 0)
     editor.title:SetText("|cff0cd29dOpener|rTrainer")
     local underline = ETex(header, "OVERLAY", ACCENT.r, ACCENT.g, ACCENT.b, 1)
     underline:SetPoint("TOPLEFT", editor.title, "BOTTOMLEFT", 0, -5)
@@ -2294,6 +2300,31 @@ local function BuildEditor()
     local tgLabel = EFont(footer, 11, 0.53)
     tgLabel:SetPoint("RIGHT", toggle, "LEFT", -8, 0)
     tgLabel:SetText(L.AUTORESET_LABEL)
+
+    -- Ridimensionabile: il minimo è il layout di default, grip in basso a destra
+    editor:SetResizable(true)
+    if editor.SetResizeBounds then editor:SetResizeBounds(EDITOR_W, EDITOR_H, 1500, 950) end
+    editor:SetScript("OnSizeChanged", function(_, w)
+        if editor.stepScroll then
+            editor.stepScroll.child:SetWidth(math.max(1, (w or EDITOR_W) - ED_SIDEBAR_W - 290))
+        end
+    end)
+    local grip = CreateFrame("Button", nil, editor)
+    grip:SetSize(16, 16)
+    grip:SetPoint("BOTTOMRIGHT", -1, 1)
+    grip:SetFrameLevel(editor:GetFrameLevel() + 5)
+    grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+    grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+    grip:SetScript("OnMouseDown", function() editor:StartSizing("BOTTOMRIGHT") end)
+    grip:SetScript("OnMouseUp", function()
+        editor:StopMovingOrSizing()
+        db.editorW = math.floor(editor:GetWidth() + 0.5)
+        db.editorH = math.floor(editor:GetHeight() + 0.5)
+        Editor_RefreshAll()
+    end)
+    -- sync iniziale: la larghezza salvata è applicata prima dell'OnSizeChanged
+    editor.stepScroll.child:SetWidth(math.max(1, editor:GetWidth() - ED_SIDEBAR_W - 290))
 
     editor:SetScript("OnShow", function()
         HideOpenerMenu()
