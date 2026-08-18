@@ -1,0 +1,12 @@
+# working files, never published
+.fablize/
+PLAN.md
+
+# secrets — CurseForge API token must NEVER be committed
+*.curseforge*
+*token*
+*.pem
+
+# junk
+Thumbs.db
+Desktop.ini
