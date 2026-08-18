@@ -714,11 +714,22 @@ local function ToggleOpenerMenu(anchor, growUp)
             btn.label:SetPoint("RIGHT", -8, 0)
             btn.label:SetJustifyH("LEFT")
             btn.label:SetWordWrap(false)
-            btn:SetScript("OnEnter", function(s) s.hl:SetColorTexture(1, 1, 1, 0.08) end)
-            btn:SetScript("OnLeave", function(s) s.hl:SetColorTexture(1, 1, 1, 0) end)
+            btn:SetScript("OnEnter", function(s)
+                s.hl:SetColorTexture(1, 1, 1, 0.08)
+                if s.fullName and (not s.label.IsTruncated or s.label:IsTruncated()) then
+                    GameTooltip:SetOwner(s, "ANCHOR_CURSOR")
+                    GameTooltip:SetText(s.fullName, 1, 1, 1, 1, true)
+                    GameTooltip:Show()
+                end
+            end)
+            btn:SetScript("OnLeave", function(s)
+                s.hl:SetColorTexture(1, 1, 1, 0)
+                GameTooltip:Hide()
+            end)
             openerMenuButtons[i] = btn
         end
         btn.label:SetText(op.name)
+        btn.fullName = op.name
         if i == activeIdx then
             btn.ind:Show()
             btn.label:SetTextColor(ACCENT.r, ACCENT.g, ACCENT.b, 1)
@@ -933,7 +944,7 @@ local function AcquireTrackerRow(i)
     local row = trackerRows[i]
     if row then return row end
     row = CreateFrame("Frame", nil, tracker)
-    row:SetSize(TRACKER_W - 20, ROW_H)
+    row:SetHeight(ROW_H)
     row.icon = row:CreateTexture(nil, "ARTWORK")
     row.icon:SetSize(16, 16)
     row.icon:SetPoint("LEFT", row, "LEFT", 0, 0)
@@ -991,7 +1002,7 @@ end
 
 local function BuildTracker()
     tracker = CreateFrame("Frame", "OpenerTrainerFrame", UIParent)
-    tracker:SetSize(TRACKER_W, 120)
+    tracker:SetSize(db.trackerW or TRACKER_W, 120)
     ETex(tracker, "BACKGROUND", PANEL_BG[1], PANEL_BG[2], PANEL_BG[3], 0.9):SetAllPoints(tracker)
     EBorder(tracker, 1, 1, 1, 0.12)
     tracker:SetMovable(true)
@@ -1017,6 +1028,27 @@ local function BuildTracker()
     tracker.subtitle:SetJustifyH("LEFT")
     tracker.subtitle:SetWordWrap(false)
 
+    -- Nome opener troncato: tooltip col nome completo agganciato al cursore
+    local nameHover = CreateFrame("Frame", nil, tracker)
+    nameHover:SetPoint("TOPLEFT", tracker.subtitle, "TOPLEFT", 0, 2)
+    nameHover:SetPoint("BOTTOMRIGHT", tracker.subtitle, "BOTTOMRIGHT", 0, -2)
+    nameHover:EnableMouse(true)
+    nameHover:RegisterForDrag("LeftButton")
+    nameHover:SetScript("OnDragStart", function() tracker:StartMoving() end)
+    nameHover:SetScript("OnDragStop", function()
+        tracker:StopMovingOrSizing()
+        SaveTrackerPos()
+    end)
+    nameHover:SetScript("OnEnter", function(s)
+        local opener = GetActiveOpener()
+        if not opener then return end
+        if tracker.subtitle.IsTruncated and not tracker.subtitle:IsTruncated() then return end
+        GameTooltip:SetOwner(s, "ANCHOR_CURSOR")
+        GameTooltip:SetText(opener.name, 1, 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    nameHover:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
     tracker.closeBtn = EGlyphButton(tracker, 20, "X", 13, 1, 0.35, 0.35, function()
         tracker:Hide()
         db.hidden = true
@@ -1037,6 +1069,23 @@ local function BuildTracker()
 
     tracker.editBtn = EButton(tracker, 72, 20, L.EDITOR, 12, nil)
     tracker.editBtn:SetPoint("BOTTOMRIGHT", -10, 8)
+
+    -- Ridimensionamento orizzontale: grip nell'angolo in basso a destra
+    tracker:SetResizable(true)
+    if tracker.SetResizeBounds then tracker:SetResizeBounds(TRACKER_W, 100, 620, 1400) end
+    local grip = CreateFrame("Button", nil, tracker)
+    grip:SetSize(16, 16)
+    grip:SetPoint("BOTTOMRIGHT", -1, 1)
+    grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+    grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+    grip:SetScript("OnMouseDown", function() tracker:StartSizing("RIGHT") end)
+    grip:SetScript("OnMouseUp", function()
+        tracker:StopMovingOrSizing()
+        db.trackerW = math.floor(tracker:GetWidth() + 0.5)
+        SaveTrackerPos()
+        Tracker_Refresh()
+    end)
 
     if db.framePos then
         tracker:ClearAllPoints()
@@ -1059,6 +1108,7 @@ function Tracker_Refresh()
         local row = AcquireTrackerRow(i)
         row:ClearAllPoints()
         row:SetPoint("TOPLEFT", tracker, "TOPLEFT", 10, -52 - (i - 1) * ROW_H)
+        row:SetPoint("RIGHT", tracker, "RIGHT", -10, 0)
         row:Show()
 
         local label, icon
@@ -1387,11 +1437,22 @@ local function TogglePresetMenu(anchor)
             btn.label:SetPoint("RIGHT", -8, 0)
             btn.label:SetJustifyH("LEFT")
             btn.label:SetWordWrap(false)
-            btn:SetScript("OnEnter", function(s) s.hl:SetColorTexture(1, 1, 1, 0.08) end)
-            btn:SetScript("OnLeave", function(s) s.hl:SetColorTexture(1, 1, 1, 0) end)
+            btn:SetScript("OnEnter", function(s)
+                s.hl:SetColorTexture(1, 1, 1, 0.08)
+                if s.fullName and (not s.label.IsTruncated or s.label:IsTruncated()) then
+                    GameTooltip:SetOwner(s, "ANCHOR_CURSOR")
+                    GameTooltip:SetText(s.fullName, 1, 1, 1, 1, true)
+                    GameTooltip:Show()
+                end
+            end)
+            btn:SetScript("OnLeave", function(s)
+                s.hl:SetColorTexture(1, 1, 1, 0)
+                GameTooltip:Hide()
+            end)
             presetMenuButtons[i] = btn
         end
         btn.label:SetText(p.name)
+        btn.fullName = p.name
         btn:SetScript("OnClick", function()
             presetMenu:Hide()
             DoImportString(p.import, GetCurrentSpecID())
@@ -1615,8 +1676,18 @@ local function AcquireSideRow(i)
     row.label:SetJustifyH("LEFT")
     row.label:SetWordWrap(false)
 
-    row:SetScript("OnEnter", function(s) s.hover:SetColorTexture(1, 1, 1, 0.05) end)
-    row:SetScript("OnLeave", function(s) s.hover:SetColorTexture(1, 1, 1, 0) end)
+    row:SetScript("OnEnter", function(s)
+        s.hover:SetColorTexture(1, 1, 1, 0.05)
+        if s.fullName and (not s.label.IsTruncated or s.label:IsTruncated()) then
+            GameTooltip:SetOwner(s, "ANCHOR_CURSOR")
+            GameTooltip:SetText(s.fullName, 1, 1, 1, 1, true)
+            GameTooltip:Show()
+        end
+    end)
+    row:SetScript("OnLeave", function(s)
+        s.hover:SetColorTexture(1, 1, 1, 0)
+        GameTooltip:Hide()
+    end)
     row:SetScript("OnClick", function(s)
         local _, _, list, spec = GetActiveOpener()
         if list[s.index] then
@@ -1641,6 +1712,7 @@ function Editor_RefreshHeader()
         row:SetPoint("TOPRIGHT", editor.sideScroll.child, "TOPRIGHT", 0, -(i - 1) * SIDE_ROW_H)
         row:Show()
         row.label:SetText(op.name)
+        row.fullName = op.name
         local sel = (i == activeIdx)
         row.indicator:SetShown(sel)
         row.glow:SetShown(sel)
