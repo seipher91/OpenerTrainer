@@ -346,10 +346,13 @@ end
 
 local talentSelected -- nil = mappa non disponibile (fail-open)
 local passiveTalentNames -- nomi (lower) dei nodi talento PASSIVI della spec
+local talentNodeNames -- nome (lower) -> selezionato: fallback quando l'ID
+                      -- dello step è una variante diversa dal nodo (Red Moon)
 
 local function BuildTalentMap()
     local map = {}
     local pnames = {}
+    local nameSel = {}
     local ok = pcall(function()
         local configID = C_ClassTalents and C_ClassTalents.GetActiveConfigID
             and C_ClassTalents.GetActiveConfigID()
@@ -375,15 +378,21 @@ local function BuildTalentMap()
                             elseif map[sid] == nil then
                                 map[sid] = false
                             end
+                            local nm = GetSpellName(sid)
+                            local nmL = nm and nm:lower()
+                            if nmL then
+                                if isSel then
+                                    nameSel[nmL] = true
+                                elseif nameSel[nmL] == nil then
+                                    nameSel[nmL] = false
+                                end
+                            end
                             -- le guide marcano i proc con ID varianti "instant"
                             -- (es. Reaver's Mark): il nome del nodo passivo
                             -- permette di riconoscerli e scartarli
-                            if C_Spell and C_Spell.IsSpellPassive then
+                            if nmL and C_Spell and C_Spell.IsSpellPassive then
                                 local okP, pv = pcall(C_Spell.IsSpellPassive, sid)
-                                if okP and pv then
-                                    local nm = GetSpellName(sid)
-                                    if nm then pnames[nm:lower()] = true end
-                                end
+                                if okP and pv then pnames[nmL] = true end
                             end
                         end
                     end
@@ -393,6 +402,7 @@ local function BuildTalentMap()
     end)
     talentSelected = ok and map or nil
     passiveTalentNames = ok and pnames or nil
+    talentNodeNames = ok and nameSel or nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -808,6 +818,13 @@ local function StepKnown(spellID)
     if C_SpellBook and try(C_SpellBook.IsSpellKnown, spellID) then return true end
     if talentSelected and talentSelected[spellID] == false then
         return false -- nodo del talent tree esistente ma non selezionato
+    end
+    -- ID variante non mappato (es. Red Moon 1252871 vs nodo): prova per nome
+    if talentNodeNames then
+        local nm = GetSpellName(spellID)
+        if nm and talentNodeNames[nm:lower()] == false then
+            return false
+        end
     end
     return true
 end
