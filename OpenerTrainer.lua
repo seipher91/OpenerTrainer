@@ -349,11 +349,13 @@ local passiveTalentNames -- nomi (lower) dei nodi talento PASSIVI della spec
 local talentNodeNames -- nome (lower) -> selezionato: fallback quando l'ID
                       -- dello step è una variante diversa dal nodo (Red Moon)
 
+local talentMapWarned = false
+
 local function BuildTalentMap()
     local map = {}
     local pnames = {}
     local nameSel = {}
-    local ok = pcall(function()
+    local ok, mapErr = pcall(function()
         local configID = C_ClassTalents and C_ClassTalents.GetActiveConfigID
             and C_ClassTalents.GetActiveConfigID()
         assert(configID, "no talent config")
@@ -378,8 +380,12 @@ local function BuildTalentMap()
                             elseif map[sid] == nil then
                                 map[sid] = false
                             end
+                            -- nomi di spell non apprese possono essere Secret
+                            -- Value: :lower() su un secret = errore che
+                            -- ucciderebbe l'intera mappa
                             local nm = GetSpellName(sid)
-                            local nmL = nm and nm:lower()
+                            local nmL = (type(nm) == "string" and not IsSecret(nm))
+                                and nm:lower() or nil
                             if nmL then
                                 if isSel then
                                     nameSel[nmL] = true
@@ -403,6 +409,12 @@ local function BuildTalentMap()
     talentSelected = ok and map or nil
     passiveTalentNames = ok and pnames or nil
     talentNodeNames = ok and nameSel or nil
+    -- mappa rotta = niente rossi/filtri: mai in silenzio
+    if not ok and not talentMapWarned and mapErr
+        and not tostring(mapErr):find("no talent config") then
+        talentMapWarned = true
+        Print("|cffff4040talent map error:|r " .. tostring(mapErr))
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -822,7 +834,8 @@ local function StepKnown(spellID)
     -- ID variante non mappato (es. Red Moon 1252871 vs nodo): prova per nome
     if talentNodeNames then
         local nm = GetSpellName(spellID)
-        if nm and talentNodeNames[nm:lower()] == false then
+        if type(nm) == "string" and not IsSecret(nm)
+            and talentNodeNames[nm:lower()] == false then
             return false
         end
     end
@@ -2452,7 +2465,8 @@ local function SpellIsPassive(id)
     end
     if type(passiveTalentNames) == "table" and not SpellPositivelyKnown(id) then
         local nm = GetSpellName(id)
-        if nm and passiveTalentNames[nm:lower()] then return true end
+        if type(nm) == "string" and (type(issecretvalue) ~= "function" or not issecretvalue(nm))
+            and passiveTalentNames[nm:lower()] then return true end
     end
     return false
 end
@@ -2741,6 +2755,17 @@ SlashCmdList.OPENERTRAINER = function(msg)
         Print(L.STATUS:format(
             VERSION, tostring(spec),
             opener and opener.name or L.STATUS_NONE, idx or 0, #list, run.pointer))
+    elseif msg:match("^spell%s+%d+$") then
+        -- diagnostica: /opener spell 1252871
+        local id = tonumber(msg:match("(%d+)"))
+        local nm = GetSpellName(id)
+        local nmL = (type(nm) == "string" and not IsSecret(nm)) and nm:lower() or nil
+        Print(("spell %d '%s' | known=%s | map=%s sel=%s | nameSel=%s | passiveName=%s"):format(
+            id, tostring(nm), tostring(StepKnown(id)),
+            talentSelected and "ok" or "NIL",
+            talentSelected and tostring(talentSelected[id]) or "-",
+            (talentNodeNames and nmL) and tostring(talentNodeNames[nmL]) or "-",
+            (passiveTalentNames and nmL) and tostring(passiveTalentNames[nmL]) or "-"))
     else
         if tracker:IsShown() then tracker:Hide(); db.hidden = true
         else tracker:Show(); db.hidden = false end
