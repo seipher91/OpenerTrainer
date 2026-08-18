@@ -818,6 +818,15 @@ end
 -- Rosso SOLO per spell talentabili non selezionate nell'albero corrente.
 -- Tutto ciò che non è un nodo dell'albero (forme override, spell base) non
 -- viene mai giudicato: meglio nessun avviso che un falso rosso.
+-- La spell è materialmente nel libro degli incantesimi del personaggio
+local function SpellInBook(spellID)
+    if C_SpellBook and C_SpellBook.FindSpellBookSlotForSpell then
+        local ok, slot = pcall(C_SpellBook.FindSpellBookSlotForSpell, spellID)
+        if ok and tonumber(slot) then return true end
+    end
+    return false
+end
+
 local function StepKnown(spellID)
     if not spellID then return true end
     local function try(fn, id)
@@ -825,20 +834,27 @@ local function StepKnown(spellID)
         local ok, r = pcall(fn, id)
         return (ok and r) and true or false
     end
+    -- Stato del nodo talento (per ID, poi per nome: le guide usano ID
+    -- varianti tipo Red Moon 1252871 diverso dall'ID del nodo)
+    local nodeSel
+    if talentSelected then nodeSel = talentSelected[spellID] end
+    if nodeSel == nil and talentNodeNames then
+        local nm = GetSpellName(spellID)
+        if type(nm) == "string" and not IsSecret(nm) then
+            nodeSel = talentNodeNames[nm:lower()]
+        end
+    end
+    -- Nodo non selezionato = veto: le API "known" MENTONO sulle varianti
+    -- hero (Red Moon non talentata risulta known). Eccezione: spell
+    -- davvero presente nel libro (baseline che condivide il nome con un
+    -- nodo di classe, es. Thrash).
+    if nodeSel == false and not SpellInBook(spellID) then
+        return false
+    end
     if try(IsSpellKnownOrOverridesKnown, spellID) then return true end
     if try(IsPlayerSpell, spellID) then return true end
     if C_SpellBook and try(C_SpellBook.IsSpellKnown, spellID) then return true end
-    if talentSelected and talentSelected[spellID] == false then
-        return false -- nodo del talent tree esistente ma non selezionato
-    end
-    -- ID variante non mappato (es. Red Moon 1252871 vs nodo): prova per nome
-    if talentNodeNames then
-        local nm = GetSpellName(spellID)
-        if type(nm) == "string" and not IsSecret(nm)
-            and talentNodeNames[nm:lower()] == false then
-            return false
-        end
-    end
+    if nodeSel == false then return false end
     return true
 end
 
@@ -2760,8 +2776,11 @@ SlashCmdList.OPENERTRAINER = function(msg)
         local id = tonumber(msg:match("(%d+)"))
         local nm = GetSpellName(id)
         local nmL = (type(nm) == "string" and not IsSecret(nm)) and nm:lower() or nil
-        Print(("spell %d '%s' | known=%s | map=%s sel=%s | nameSel=%s | passiveName=%s"):format(
-            id, tostring(nm), tostring(StepKnown(id)),
+        local function b(fn) local ok, r = pcall(fn, id) return tostring(ok and r or false) end
+        Print(("spell %d '%s' | known=%s inBook=%s | koo=%s ips=%s csb=%s | map=%s sel=%s | nameSel=%s | passiveName=%s"):format(
+            id, tostring(nm), tostring(StepKnown(id)), tostring(SpellInBook(id)),
+            b(IsSpellKnownOrOverridesKnown), b(IsPlayerSpell),
+            b(C_SpellBook and C_SpellBook.IsSpellKnown),
             talentSelected and "ok" or "NIL",
             talentSelected and tostring(talentSelected[id]) or "-",
             (talentNodeNames and nmL) and tostring(talentNodeNames[nmL]) or "-",
