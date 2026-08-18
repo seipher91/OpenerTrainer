@@ -2065,8 +2065,8 @@ local function BuildEditor()
 
     -- Colonna spell
     local spellsCol = CreateFrame("Frame", nil, editor)
-    spellsCol:SetPoint("TOPLEFT", ED_SIDEBAR_W, -ED_HEADER_H)
-    spellsCol:SetPoint("BOTTOMLEFT", ED_SIDEBAR_W, ED_FOOTER_H)
+    spellsCol:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 0, 0)
+    spellsCol:SetPoint("BOTTOMLEFT", sidebar, "BOTTOMRIGHT", 0, 0)
     spellsCol:SetWidth(290)
     local spellsDiv = ETex(spellsCol, "OVERLAY", 1, 1, 1, 0.06)
     spellsDiv:SetPoint("TOPRIGHT")
@@ -2104,7 +2104,7 @@ local function BuildEditor()
 
     -- Colonna sequenza
     local stepsCol = CreateFrame("Frame", nil, editor)
-    stepsCol:SetPoint("TOPLEFT", ED_SIDEBAR_W + 290, -ED_HEADER_H)
+    stepsCol:SetPoint("TOPLEFT", spellsCol, "TOPRIGHT", 0, 0)
     stepsCol:SetPoint("BOTTOMRIGHT", 0, ED_FOOTER_H)
     local stepsLabel = EFont(stepsCol, 11, 0.41)
     stepsLabel:SetPoint("TOPLEFT", 12, -10)
@@ -2301,14 +2301,24 @@ local function BuildEditor()
     tgLabel:SetPoint("RIGHT", toggle, "LEFT", -8, 0)
     tgLabel:SetText(L.AUTORESET_LABEL)
 
-    -- Ridimensionabile: il minimo è il layout di default, grip in basso a destra
+    -- Ridimensionabile: il minimo è il layout di default, grip in basso a destra.
+    -- Larghezza extra ripartita tra le colonne: 20% sidebar, 30% spell, 50% sequenza.
     editor:SetResizable(true)
     if editor.SetResizeBounds then editor:SetResizeBounds(EDITOR_W, EDITOR_H, 1500, 950) end
-    editor:SetScript("OnSizeChanged", function(_, w)
-        if editor.stepScroll then
-            editor.stepScroll.child:SetWidth(math.max(1, (w or EDITOR_W) - ED_SIDEBAR_W - 290))
-        end
-    end)
+    local function EditorRelayout(w)
+        w = w or editor:GetWidth()
+        local extra = math.max(0, w - EDITOR_W)
+        local sideW = ED_SIDEBAR_W + math.floor(extra * 0.2)
+        local spellsW = 290 + math.floor(extra * 0.3)
+        sidebar:SetWidth(sideW)
+        editor.sideScroll.child:SetWidth(sideW - 1)
+        newBtn:SetWidth(sideW - 20)
+        spellsCol:SetWidth(spellsW)
+        editor.search:SetWidth(spellsW - 24)
+        editor.spellScroll.child:SetWidth(spellsW - 1)
+        editor.stepScroll.child:SetWidth(math.max(1, w - sideW - spellsW))
+    end
+    editor:SetScript("OnSizeChanged", function(_, w) EditorRelayout(w) end)
     local grip = CreateFrame("Button", nil, editor)
     grip:SetSize(16, 16)
     grip:SetPoint("BOTTOMRIGHT", -1, 1)
@@ -2324,7 +2334,7 @@ local function BuildEditor()
         Editor_RefreshAll()
     end)
     -- sync iniziale: la larghezza salvata è applicata prima dell'OnSizeChanged
-    editor.stepScroll.child:SetWidth(math.max(1, editor:GetWidth() - ED_SIDEBAR_W - 290))
+    EditorRelayout()
 
     editor:SetScript("OnShow", function()
         HideOpenerMenu()
