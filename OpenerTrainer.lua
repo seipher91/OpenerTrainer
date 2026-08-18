@@ -844,17 +844,18 @@ local function StepKnown(spellID)
             nodeSel = talentNodeNames[nm:lower()]
         end
     end
-    -- Nodo non selezionato = veto: le API "known" MENTONO sulle varianti
-    -- hero (Red Moon non talentata risulta known). Eccezione: spell
-    -- davvero presente nel libro (baseline che condivide il nome con un
-    -- nodo di classe, es. Thrash).
-    if nodeSel == false and not SpellInBook(spellID) then
+    -- Nodo non selezionato = veto, salvo che la spell risulti conosciuta
+    -- dalle API STRETTE (IsPlayerSpell / C_SpellBook.IsSpellKnown, che
+    -- coprono le baseline tipo Thrash). Su Red Moon non talentata sia
+    -- IsSpellKnownOrOverridesKnown sia FindSpellBookSlotForSpell mentono.
+    if nodeSel == false then
+        if try(IsPlayerSpell, spellID) then return true end
+        if C_SpellBook and try(C_SpellBook.IsSpellKnown, spellID) then return true end
         return false
     end
     if try(IsSpellKnownOrOverridesKnown, spellID) then return true end
     if try(IsPlayerSpell, spellID) then return true end
     if C_SpellBook and try(C_SpellBook.IsSpellKnown, spellID) then return true end
-    if nodeSel == false then return false end
     return true
 end
 
