@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.0 (2026-08-19)
+
+### Added
+- **Skip big cooldowns**: new "Skip big CDs" toggle in the editor footer (also `/opener skipcd`). When enabled, a spell with a base cooldown longer than 25s that is currently on cooldown gets skipped in the rotation (grayed out, "skip") instead of blocking the run: automatically when the remaining cooldown is over 10s, or as soon as you cast a later step. Short cooldowns are part of the rotation and are never skipped; combo steps are never auto-skipped. The current step shows an "on CD" hint when it qualifies.
+- **Vertical bar**: a new button on the icon bar (three dots showing the target layout) toggles vertical/horizontal orientation; controls re-arrange and the choice is saved per character.
+- **Bar icon size slider** in the editor sidebar: 5–48 px, resizes the bar live.
+- Addon version shown in the editor header next to the close button.
+
+### Changed
+- The opener selector in the tracker is now a real select-style dropdown: opener name (accent) + caret in one clickable box with hover feedback; the menu opens aligned and as wide as the control. The bar selector uses the same caret glyph, and the tracker Reset button gained the « icon.
+- `/opener spell <id>` diagnostics extended with cooldown/skip state.
+
 ## 1.3.0 (2026-08-19)
 
 ### Added

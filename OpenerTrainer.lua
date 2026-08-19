@@ -4,7 +4,7 @@
 
 local ADDON_NAME = ...
 
-local VERSION = "1.3.0"
+local VERSION = "1.4.0"
 local ICON_PATH = "Interface\\AddOns\\OpenerTrainer\\Media\\icon"
 local ICON_FALLBACK = "Interface\\Icons\\INV_Misc_QuestionMark"
 local ICON_INFO = "Interface\\Icons\\INV_Misc_Note_01"
@@ -48,7 +48,16 @@ local L = {
     MM_DRAG = "Drag: move this button",
     AUTORESET_ON = "Auto-reset on leaving combat: ON",
     AUTORESET_OFF = "Auto-reset on leaving combat: OFF",
-    AUTORESET_LABEL = "Auto-reset when leaving combat",
+    AUTORESET_LABEL = "Auto-reset",
+    AUTORESET_TT = "Reset the run when leaving combat",
+    SKIPCD_LABEL = "Skip big CDs",
+    SKIPCD_TT = "If a spell with a cooldown longer than 25s is on cooldown during a run, skip it (grayed out) instead of blocking the rotation. Short cooldowns are never skipped.",
+    SKIPCD_ON = "Skip big cooldowns: ON",
+    SKIPCD_OFF = "Skip big cooldowns: OFF",
+    SKIPPED = "skip",
+    ONCD = "on CD",
+    BAR_ORIENT_TT = "Toggle vertical / horizontal bar",
+    BAR_SIZE_LABEL = "Bar icon size: %d",
     STATUS = "v%s — spec %s, opener %s (%d of %d), expected step %d",
     STATUS_NONE = "none",
     EXPORT = "Export",
@@ -112,7 +121,16 @@ if GetLocale() == "itIT" then
     L.MM_DRAG = "Trascina: sposta il pulsante"
     L.AUTORESET_ON = "Auto-reset a fine combat: ATTIVO"
     L.AUTORESET_OFF = "Auto-reset a fine combat: DISATTIVO"
-    L.AUTORESET_LABEL = "Auto-reset all'uscita dal combat"
+    L.AUTORESET_LABEL = "Auto-reset"
+    L.AUTORESET_TT = "Resetta la run quando esci dal combattimento"
+    L.SKIPCD_LABEL = "Salta CD lunghi"
+    L.SKIPCD_TT = "Se una spell con cooldown superiore a 25s è in cooldown durante una prova, viene saltata (grigiata) invece di bloccare la rotation. I cooldown corti non vengono mai saltati."
+    L.SKIPCD_ON = "Salto dei cooldown lunghi: ATTIVO"
+    L.SKIPCD_OFF = "Salto dei cooldown lunghi: DISATTIVO"
+    L.SKIPPED = "saltata"
+    L.ONCD = "in CD"
+    L.BAR_ORIENT_TT = "Barra verticale / orizzontale"
+    L.BAR_SIZE_LABEL = "Icone barra: %d"
     L.STATUS = "v%s — spec %s, opener %s (%d di %d), step atteso %d"
     L.STATUS_NONE = "nessuna"
     L.EXPORT = "Esporta"
@@ -148,6 +166,7 @@ local COLOR_DONE = { 0.25, 1.00, 0.35 }
 local COLOR_CURRENT = { 1.00, 0.90, 0.25 }
 local COLOR_PENDING = { 0.85, 0.85, 0.85 }
 local COLOR_MISSING = { 1.00, 0.30, 0.30 }
+local COLOR_SKIPPED = { 0.45, 0.45, 0.45 }
 
 local db -- OpenerTrainerDB, valorizzato in ADDON_LOADED
 
@@ -425,7 +444,7 @@ end
 -- Tracker: stato della run
 -- ---------------------------------------------------------------------------
 
-local run = { pointer = 1, castsInStep = 0, lastCastTime = nil, deltas = {}, intra = {}, done = {}, comboHits = {} }
+local run = { pointer = 1, castsInStep = 0, lastCastTime = nil, deltas = {}, intra = {}, done = {}, comboHits = {}, skipped = {} }
 
 local Tracker_Refresh, Editor_RefreshSteps, Editor_RefreshSpells, Editor_RefreshHeader, Editor_RefreshAll, Bar_Refresh -- fwd
 local ExportOpener, ImportOpener, ApplyTalentString -- fwd (definiti dopo l'editor, usati dai suoi pulsanti)
@@ -437,7 +456,7 @@ local function AdvancePastInfo(steps)
 end
 
 local function ResetRun()
-    run = { pointer = 1, castsInStep = 0, lastCastTime = nil, deltas = {}, intra = {}, done = {}, comboHits = {} }
+    run = { pointer = 1, castsInStep = 0, lastCastTime = nil, deltas = {}, intra = {}, done = {}, comboHits = {}, skipped = {} }
     local opener = GetActiveOpener()
     if opener then AdvancePastInfo(opener.steps) end
 end
@@ -788,7 +807,12 @@ local function ToggleOpenerMenu(anchor, growUp)
         btn:Show()
     end
     for i = #list + 1, #openerMenuButtons do openerMenuButtons[i]:Hide() end
-    openerMenu:SetSize(190, 8 + #list * MENU_ITEM_H)
+    -- largo almeno quanto il controllo che lo apre (stile select)
+    local mw = 190
+    if anchor and anchor.GetWidth then
+        mw = math.max(mw, math.floor((anchor:GetWidth() or 0) + 0.5))
+    end
+    openerMenu:SetSize(mw, 8 + #list * MENU_ITEM_H)
     openerMenu:ClearAllPoints()
     if growUp then
         openerMenu:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", 0, 2)
@@ -891,6 +915,74 @@ local function StepMissing(step)
     return false
 end
 
+-- Skip dei cooldown "grossi": una spell con CD base > 25s attualmente in
+-- cooldown può essere saltata (flag db.skipBigCds) invece di bloccare la run
+local BIG_CD_SECONDS = 25
+
+local function SpellBigCooldown(sid)
+    local ms
+    if C_Spell and C_Spell.GetSpellBaseCooldown then
+        local ok, cd = pcall(C_Spell.GetSpellBaseCooldown, sid)
+        if ok then ms = tonumber(cd) end
+    end
+    if ms == nil and type(GetSpellBaseCooldown) == "function" then
+        local ok, cd = pcall(GetSpellBaseCooldown, sid)
+        if ok then ms = tonumber(cd) end
+    end
+    return ((ms or 0) / 1000) > BIG_CD_SECONDS, (ms or 0) / 1000
+end
+
+local function SpellCooldownRemaining(sid)
+    if not (C_Spell and C_Spell.GetSpellCooldown) then return 0 end
+    local ok, info = pcall(C_Spell.GetSpellCooldown, sid)
+    if not (ok and type(info) == "table") then return 0 end
+    local start = tonumber(info.startTime)
+    local dur = tonumber(info.duration)
+    -- valori secret/assenti: fail-open, meglio non skippare
+    if not (start and dur) then return 0 end
+    if dur <= 2 then return 0 end -- GCD o nessun cooldown
+    local rem = start + dur - GetTime()
+    return rem > 0 and rem or 0
+end
+
+local function SpellOnCooldown(sid)
+    return SpellCooldownRemaining(sid) > 0.5
+end
+
+local function StepAutoSkippable(step)
+    if not (db and db.skipBigCds) then return false end
+    if step.kind == "info" then return false end
+    if step.also and #step.also > 0 then return false end -- mai le combo
+    return SpellBigCooldown(step.spellID) and SpellOnCooldown(step.spellID)
+end
+
+-- Skip EAGER: se lo step corrente ha un CD residuo lungo (> 10s) viene
+-- grigiato subito, senza aspettare il cast dello step dopo. Sotto i 10s
+-- si presume che il giocatore aspetti la fine del cooldown.
+local BIG_CD_WAIT = 10
+
+local function EagerSkipCurrent(steps)
+    if not (db and db.skipBigCds) then return false end
+    local changed = false
+    AdvancePastInfo(steps)
+    while run.pointer <= #steps do
+        local s = steps[run.pointer]
+        if s.kind == "info" then
+            run.pointer = run.pointer + 1
+        elseif StepAutoSkippable(s) and SpellCooldownRemaining(s.spellID) > BIG_CD_WAIT then
+            run.skipped[run.pointer] = true
+            run.pointer = run.pointer + 1
+            run.castsInStep = 0
+            run.stepStart = nil
+            run.comboHits = {}
+            changed = true
+        else
+            break
+        end
+    end
+    return changed
+end
+
 local function OnPlayerCast(spellID)
     spellID = ScrubID(spellID)
     if not spellID then return end
@@ -904,6 +996,38 @@ local function OnPlayerCast(spellID)
     if run.pointer > #steps then return end
     local step = steps[run.pointer]
     if not step then return end
+
+    -- Skip lazy dei CD grossi: se il cast NON appartiene allo step corrente
+    -- ma a uno step successivo raggiungibile saltando solo spell con CD
+    -- lungo attualmente in cooldown, quelle vengono grigiate e superate.
+    -- Lazy = si skippa solo quando arriva il cast dello step dopo: se
+    -- l'utente aspetta la fine del cooldown, nessuno skip sbagliato.
+    if db.skipBigCds and not StepMatches(step, spellID) then
+        local j, target = run.pointer, nil
+        while j <= #steps do
+            local s = steps[j]
+            if s.kind == "info" then
+                j = j + 1
+            elseif StepMatches(s, spellID) then
+                target = j
+                break
+            elseif StepAutoSkippable(s) then
+                j = j + 1
+            else
+                break -- step non skippabile e non combaciante: cast estraneo
+            end
+        end
+        if target and target > run.pointer then
+            for k = run.pointer, target - 1 do
+                if steps[k].kind ~= "info" then run.skipped[k] = true end
+            end
+            run.pointer = target
+            run.castsInStep = 0
+            run.stepStart = nil
+            run.comboHits = {}
+            step = steps[target]
+        end
+    end
 
     -- Step combo ("insieme o quasi"): completo quando TUTTE le spell del
     -- gruppo sono state castate, in qualunque ordine e senza finestra
@@ -943,6 +1067,7 @@ local function OnPlayerCast(spellID)
             run.stepStart = nil
             run.comboHits = {}
             AdvancePastInfo(steps)
+            EagerSkipCurrent(steps)
         end
         Tracker_Refresh()
         return
@@ -970,6 +1095,7 @@ local function OnPlayerCast(spellID)
         run.castsInStep = 0
         run.stepStart = nil
         AdvancePastInfo(steps)
+        EagerSkipCurrent(steps)
     end
     Tracker_Refresh()
 end
@@ -1162,32 +1288,58 @@ local function BuildTracker()
     underline:SetPoint("TOPLEFT", tracker.title, "BOTTOMLEFT", 0, -3)
     underline:SetSize(40, 2)
 
-    tracker.subtitle = EFont(tracker, 11, 0.53)
-    tracker.subtitle:SetPoint("TOPLEFT", tracker.title, "BOTTOMLEFT", 0, -9)
-    tracker.subtitle:SetPoint("RIGHT", tracker, "RIGHT", -28, 0)
+    -- Selettore opener: un vero dropdown stile select — il box contiene
+    -- VALORE (nome, accent) e caret; tutta l'area è cliccabile e fa hover
+    local selBox = CreateFrame("Button", nil, tracker)
+    selBox:SetPoint("TOPLEFT", tracker.title, "BOTTOMLEFT", 0, -7)
+    selBox:SetPoint("RIGHT", tracker, "RIGHT", -10, 0)
+    selBox:SetHeight(22)
+    local selBg = ETex(selBox, "BACKGROUND", DD_BG[1], DD_BG[2], DD_BG[3], 1)
+    selBg:SetAllPoints()
+    local selBorder = EBorder(selBox, 1, 1, 1, 0.10)
+
+    tracker.subtitle = EFont(selBox, 12, 1)
+    tracker.subtitle:SetPoint("LEFT", 8, 0)
+    tracker.subtitle:SetPoint("RIGHT", -24, 0)
     tracker.subtitle:SetJustifyH("LEFT")
     tracker.subtitle:SetWordWrap(false)
+    tracker.subtitle:SetTextColor(ACCENT.r, ACCENT.g, ACCENT.b, 1)
 
-    -- Nome opener troncato: tooltip col nome completo agganciato al cursore
-    local nameHover = CreateFrame("Frame", nil, tracker)
-    nameHover:SetPoint("TOPLEFT", tracker.subtitle, "TOPLEFT", 0, 2)
-    nameHover:SetPoint("BOTTOMRIGHT", tracker.subtitle, "BOTTOMRIGHT", 0, -2)
-    nameHover:EnableMouse(true)
-    nameHover:RegisterForDrag("LeftButton")
-    nameHover:SetScript("OnDragStart", function() tracker:StartMoving() end)
-    nameHover:SetScript("OnDragStop", function()
+    -- caret ▼ a strip piatte (SetRotation non rende su tinte unite)
+    local caretTexs = {}
+    local caretRows = { 10, 6, 2 }
+    for i, w in ipairs(caretRows) do
+        local t = ETex(selBox, "OVERLAY", ACCENT.r, ACCENT.g, ACCENT.b, 1)
+        t:SetSize(w, 2)
+        t:SetPoint("CENTER", selBox, "RIGHT", -14, 2 - (i - 1) * 2)
+        caretTexs[i] = t
+    end
+
+    selBox:SetScript("OnEnter", function(s)
+        selBorder:SetColor(ACCENT.r, ACCENT.g, ACCENT.b, 0.7)
+        selBg:SetColorTexture(DD_BG[1] * 1.5, DD_BG[2] * 1.5, DD_BG[3] * 1.5, 1)
+        for _, t in ipairs(caretTexs) do t:SetColorTexture(1, 1, 1, 1) end
+        local opener = GetActiveOpener()
+        if opener and (not tracker.subtitle.IsTruncated or tracker.subtitle:IsTruncated()) then
+            GameTooltip:SetOwner(s, "ANCHOR_CURSOR")
+            GameTooltip:SetText(opener.name, 1, 1, 1, 1, true)
+            GameTooltip:Show()
+        end
+    end)
+    selBox:SetScript("OnLeave", function()
+        selBorder:SetColor(1, 1, 1, 0.10)
+        selBg:SetColorTexture(DD_BG[1], DD_BG[2], DD_BG[3], 1)
+        for _, t in ipairs(caretTexs) do t:SetColorTexture(ACCENT.r, ACCENT.g, ACCENT.b, 1) end
+        GameTooltip:Hide()
+    end)
+    selBox:SetScript("OnClick", function() ToggleOpenerMenu(selBox, false) end)
+    selBox:RegisterForDrag("LeftButton")
+    selBox:SetScript("OnDragStart", function() tracker:StartMoving() end)
+    selBox:SetScript("OnDragStop", function()
         tracker:StopMovingOrSizing()
         SaveTrackerPos()
     end)
-    nameHover:SetScript("OnEnter", function(s)
-        local opener = GetActiveOpener()
-        if not opener then return end
-        if tracker.subtitle.IsTruncated and not tracker.subtitle:IsTruncated() then return end
-        GameTooltip:SetOwner(s, "ANCHOR_CURSOR")
-        GameTooltip:SetText(opener.name, 1, 1, 1, 1, true)
-        GameTooltip:Show()
-    end)
-    nameHover:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    tracker.selBtn = selBox
 
     tracker.closeBtn = EGlyphButton(tracker, 20, "X", 13, 1, 0.35, 0.35, function()
         tracker:Hide()
@@ -1195,13 +1347,8 @@ local function BuildTracker()
     end)
     tracker.closeBtn:SetPoint("TOPRIGHT", -4, -4)
 
-    -- Dropdown scelta opener accanto al nome
-    tracker.selBtn = EGlyphButton(tracker, 18, "v", 11, ACCENT.r, ACCENT.g, ACCENT.b, function()
-        ToggleOpenerMenu(tracker.selBtn, false)
-    end)
-    tracker.selBtn:SetPoint("TOPRIGHT", tracker, "TOPRIGHT", -6, -26)
 
-    tracker.resetBtn = EButton(tracker, 72, 20, L.RESET, 12, function()
+    tracker.resetBtn = EButton(tracker, 72, 20, "|cff0cd29d«|r " .. L.RESET, 12, function()
         ResetRun()
         Tracker_Refresh()
     end)
@@ -1247,7 +1394,7 @@ function Tracker_Refresh()
     for i, step in ipairs(steps) do
         local row = AcquireTrackerRow(i)
         row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", tracker, "TOPLEFT", 10, -52 - (i - 1) * ROW_H)
+        row:SetPoint("TOPLEFT", tracker, "TOPLEFT", 10, -62 - (i - 1) * ROW_H)
         row:SetPoint("RIGHT", tracker, "RIGHT", -10, 0)
         row:Show()
 
@@ -1267,7 +1414,9 @@ function Tracker_Refresh()
         row.step, row.missing = step, missing
 
         local c
-        if missing then
+        if run.skipped and run.skipped[i] then
+            c = COLOR_SKIPPED
+        elseif missing then
             c = COLOR_MISSING
         elseif step.kind == "info" or run.done[i] then
             c = COLOR_DONE
@@ -1278,7 +1427,9 @@ function Tracker_Refresh()
         end
         row.name:SetTextColor(c[1], c[2], c[3])
 
-        if step.kind == "info" then
+        if run.skipped and run.skipped[i] then
+            row.delta:SetText("|cff888888" .. L.SKIPPED .. "|r")
+        elseif step.kind == "info" then
             row.delta:SetText("|cff55dd55—|r")
         elseif run.done[i] then
             if run.intra[i] then
@@ -1286,6 +1437,10 @@ function Tracker_Refresh()
             else
                 row.delta:SetFormattedText("|cff55dd55+%.2fs|r", run.deltas[i] or 0)
             end
+        elseif i == run.pointer and StepAutoSkippable(step) then
+            -- flag skip attivo e spell in cooldown lungo: si grigerà al
+            -- prossimo cast utile — intanto avvisa
+            row.delta:SetText("|cff888888" .. L.ONCD .. "|r")
         elseif i == run.pointer and step.also and #step.also > 0 then
             local hits = 0
             if run.comboHits and run.comboHits.primary then hits = hits + 1 end
@@ -1308,7 +1463,7 @@ function Tracker_Refresh()
     end
 
     local n = math.max(#steps, 1)
-    tracker:SetHeight(52 + n * ROW_H + 34)
+    tracker:SetHeight(62 + n * ROW_H + 34)
 
     Bar_Refresh()
 end
@@ -1327,6 +1482,11 @@ local BAR_H = 42
 local function SaveBarPos()
     local point, _, relPoint, x, y = bar:GetPoint(1)
     db.barPos = { point = point, relPoint = relPoint, x = x, y = y }
+end
+
+-- Dimensione icone barra scelta dall'utente (slider nell'editor), min 5
+local function BarIconSize()
+    return math.max(5, math.min(48, math.floor(tonumber(db and db.barIconSize) or BAR_ICON)))
 end
 
 local function AcquireBarIcon(i)
@@ -1377,6 +1537,41 @@ local function AcquireBarIcon(i)
     return f
 end
 
+-- I tre punti del bottone orientamento mostrano la disposizione TARGET
+-- (cosa ottieni cliccando), non quella attuale
+local function Bar_UpdateOrientIcon()
+    if not (bar and bar.orientBtn) then return end
+    local targetVertical = not db.barVertical
+    for d, t in ipairs(bar.orientBtn.dots) do
+        t:ClearAllPoints()
+        local off = (d - 2) * 5
+        if targetVertical then
+            t:SetPoint("CENTER", bar.orientBtn, "CENTER", 0, off)
+        else
+            t:SetPoint("CENTER", bar.orientBtn, "CENTER", off, 0)
+        end
+    end
+end
+
+local function Bar_LayoutControls()
+    if not (bar and bar.selBtn) then return end
+    bar.selBtn:ClearAllPoints()
+    bar.orientBtn:ClearAllPoints()
+    bar.resetBtn:ClearAllPoints()
+    bar.closeBtn:ClearAllPoints()
+    if db.barVertical then
+        bar.selBtn:SetPoint("TOP", 0, -4)
+        bar.closeBtn:SetPoint("BOTTOM", 0, 4)
+        bar.resetBtn:SetPoint("BOTTOM", bar.closeBtn, "TOP", 0, 2)
+        bar.orientBtn:SetPoint("BOTTOM", bar.resetBtn, "TOP", 0, 2)
+    else
+        bar.selBtn:SetPoint("LEFT", 6, 0)
+        bar.closeBtn:SetPoint("RIGHT", -4, 0)
+        bar.resetBtn:SetPoint("RIGHT", bar.closeBtn, "LEFT", -2, 0)
+        bar.orientBtn:SetPoint("RIGHT", bar.resetBtn, "LEFT", -2, 0)
+    end
+end
+
 local function BuildBar()
     bar = CreateFrame("Frame", "OpenerTrainerBar", UIParent)
     bar:SetSize(200, BAR_H)
@@ -1392,11 +1587,25 @@ local function BuildBar()
         SaveBarPos()
     end)
 
-    bar.selBtn = EGlyphButton(bar, 18, "v", 11, ACCENT.r, ACCENT.g, ACCENT.b, function()
+    -- Selettore opener: stesso caret ▼ a strip del dropdown nel tracker
+    bar.selBtn = EGlyphButton(bar, 18, "", 11, 1, 1, 1, function()
         -- Il menu si apre verso l'ALTO: la barra sta sopra le action bar
         ToggleOpenerMenu(bar.selBtn, true)
     end)
     bar.selBtn:SetPoint("LEFT", 6, 0)
+    local bCaret = {}
+    for i, w in ipairs({ 10, 6, 2 }) do
+        local t = ETex(bar.selBtn, "OVERLAY", ACCENT.r, ACCENT.g, ACCENT.b, 1)
+        t:SetSize(w, 2)
+        t:SetPoint("CENTER", bar.selBtn, "CENTER", 0, 2 - (i - 1) * 2)
+        bCaret[i] = t
+    end
+    bar.selBtn:SetScript("OnEnter", function()
+        for _, t in ipairs(bCaret) do t:SetColorTexture(1, 1, 1, 1) end
+    end)
+    bar.selBtn:SetScript("OnLeave", function()
+        for _, t in ipairs(bCaret) do t:SetColorTexture(ACCENT.r, ACCENT.g, ACCENT.b, 1) end
+    end)
 
     bar.closeBtn = EGlyphButton(bar, 18, "X", 12, 1, 0.35, 0.35, function()
         bar:Hide()
@@ -1417,6 +1626,31 @@ local function BuildBar()
     end)
     bar.resetBtn:HookScript("OnLeave", function() GameTooltip:Hide() end)
 
+    -- Orientamento verticale/orizzontale
+    bar.orientBtn = EGlyphButton(bar, 18, "", 11, 1, 1, 1, function()
+        db.barVertical = not db.barVertical
+        Bar_UpdateOrientIcon()
+        Bar_Refresh()
+    end)
+    bar.orientBtn.dots = {}
+    for d = 1, 3 do
+        local t = ETex(bar.orientBtn, "OVERLAY", ACCENT.r, ACCENT.g, ACCENT.b, 1)
+        t:SetSize(3, 3)
+        bar.orientBtn.dots[d] = t
+    end
+    bar.orientBtn:SetScript("OnEnter", function(s)
+        for _, t in ipairs(s.dots) do t:SetColorTexture(1, 1, 1, 1) end
+        GameTooltip:SetOwner(s, "ANCHOR_TOP")
+        GameTooltip:SetText(L.BAR_ORIENT_TT)
+        GameTooltip:Show()
+    end)
+    bar.orientBtn:SetScript("OnLeave", function(s)
+        for _, t in ipairs(s.dots) do t:SetColorTexture(ACCENT.r, ACCENT.g, ACCENT.b, 1) end
+        GameTooltip:Hide()
+    end)
+    Bar_UpdateOrientIcon()
+    Bar_LayoutControls()
+
     if db.barPos then
         bar:ClearAllPoints()
         bar:SetPoint(db.barPos.point or "BOTTOM", UIParent, db.barPos.relPoint or "BOTTOM",
@@ -1435,7 +1669,14 @@ function Bar_Refresh()
         local f = AcquireBarIcon(i)
         f.step = step
         f:ClearAllPoints()
-        f:SetPoint("LEFT", bar, "LEFT", BAR_PAD_L + (i - 1) * (BAR_ICON + BAR_GAP), 0)
+        local sz = BarIconSize()
+        f:SetSize(sz, sz)
+        f.border:SetSize(sz + 4, sz + 4)
+        if db.barVertical then
+            f:SetPoint("TOP", bar, "TOP", 0, -(26 + (i - 1) * (sz + BAR_GAP)))
+        else
+            f:SetPoint("LEFT", bar, "LEFT", BAR_PAD_L + (i - 1) * (sz + BAR_GAP), 0)
+        end
         f:Show()
 
         local icon
@@ -1450,7 +1691,11 @@ function Bar_Refresh()
         f.missing = missing
         local done = step.kind == "info" or run.done[i]
         local current = (i == run.pointer) and step.kind ~= "info"
-        if missing then
+        if run.skipped and run.skipped[i] then
+            f.border:Hide()
+            f.icon:SetDesaturated(true)
+            f.icon:SetVertexColor(0.35, 0.35, 0.35)
+        elseif missing then
             f.border:Show()
             f.border:SetVertexColor(0.9, 0.15, 0.15, 0.9)
             f.icon:SetDesaturated(true)
@@ -1486,8 +1731,14 @@ function Bar_Refresh()
     for i = #steps + 1, #barIcons do barIcons[i]:Hide() end
 
     local n = #steps
-    local w = BAR_PAD_L + (n > 0 and (n * (BAR_ICON + BAR_GAP) - BAR_GAP) or 40) + BAR_PAD_R
-    bar:SetWidth(w)
+    local sz = BarIconSize()
+    local span = (n > 0 and (n * (sz + BAR_GAP) - BAR_GAP) or 40)
+    if db.barVertical then
+        bar:SetSize(math.max(sz + 12, 40), 26 + span + 70)
+    else
+        bar:SetSize(BAR_PAD_L + span + BAR_PAD_R + 22, math.max(BAR_H, sz + 12))
+    end
+    Bar_LayoutControls()
 end
 
 -- ---------------------------------------------------------------------------
@@ -2220,6 +2471,11 @@ local function BuildEditor()
     closeBtn.label = EFont(closeBtn, 14, 0.55)
     closeBtn.label:SetPoint("CENTER")
     closeBtn.label:SetText("X")
+
+    -- versione addon accanto alla X
+    local verFS = EFont(header, 11, 0.41)
+    verFS:SetPoint("RIGHT", closeBtn, "LEFT", -8, 0)
+    verFS:SetText("v" .. VERSION)
     closeBtn:SetScript("OnEnter", function(s) s.label:SetTextColor(1, 0.35, 0.35, 1) end)
     closeBtn:SetScript("OnLeave", function(s) s.label:SetTextColor(1, 1, 1, 0.55) end)
     closeBtn:SetScript("OnClick", function() editor:Hide() end)
@@ -2239,7 +2495,7 @@ local function BuildEditor()
 
     editor.sideScroll = EScrollList(sidebar)
     editor.sideScroll:SetPoint("TOPLEFT", 0, -28)
-    editor.sideScroll:SetPoint("BOTTOMRIGHT", -1, 36)
+    editor.sideScroll:SetPoint("BOTTOMRIGHT", -1, 76)
     editor.sideScroll.child:SetWidth(ED_SIDEBAR_W - 1)
 
     local newBtn = EButton(sidebar, ED_SIDEBAR_W - 20, 24, "+ " .. L.NEW, 12, function()
@@ -2258,6 +2514,33 @@ local function BuildEditor()
         })
     end)
     newBtn:SetPoint("BOTTOM", 0, 7)
+
+    -- Slider dimensione icone della barra (min 5), stile flat
+    local sizeLabel = EFont(sidebar, 11, 0.41)
+    sizeLabel:SetPoint("BOTTOM", newBtn, "TOP", 0, 26)
+    sizeLabel:SetText(L.BAR_SIZE_LABEL:format(BAR_ICON))
+    local sizeSlider = CreateFrame("Slider", nil, sidebar)
+    sizeSlider:SetOrientation("HORIZONTAL")
+    sizeSlider:SetSize(ED_SIDEBAR_W - 24, 14)
+    sizeSlider:SetPoint("BOTTOM", newBtn, "TOP", 0, 10)
+    sizeSlider:SetMinMaxValues(5, 48)
+    sizeSlider:SetValueStep(1)
+    if sizeSlider.SetObeyStepOnDrag then sizeSlider:SetObeyStepOnDrag(true) end
+    local trackTex = ETex(sizeSlider, "BACKGROUND", 1, 1, 1, 0.12)
+    trackTex:SetPoint("LEFT")
+    trackTex:SetPoint("RIGHT")
+    trackTex:SetHeight(2)
+    sizeSlider:SetThumbTexture("Interface\\Buttons\\WHITE8x8")
+    local th = sizeSlider:GetThumbTexture()
+    th:SetSize(8, 14)
+    th:SetVertexColor(ACCENT.r, ACCENT.g, ACCENT.b, 1)
+    sizeSlider:SetScript("OnValueChanged", function(_, v)
+        v = math.floor((tonumber(v) or BAR_ICON) + 0.5)
+        db.barIconSize = v
+        sizeLabel:SetText(L.BAR_SIZE_LABEL:format(v))
+        Bar_Refresh()
+    end)
+    editor.barSizeSlider = sizeSlider
 
     -- Colonna spell
     local spellsCol = CreateFrame("Frame", nil, editor)
@@ -2456,46 +2739,82 @@ local function BuildEditor()
         })
     end)
 
-    -- Toggle animato (40x20, track #444 -> accent, knob bianco)
+    -- Toggle animato (40x20, track #444 -> accent, knob bianco) — factory:
+    -- ne servono due (auto-reset e skip CD lunghi)
     local TG_W, TG_H, TG_PAD, TG_DUR = 40, 20, 2, 0.075
-    local toggle = CreateFrame("Button", nil, footer)
-    toggle:SetSize(TG_W, TG_H)
-    toggle:SetPoint("RIGHT", -12, 0)
-    local tgBg = ETex(toggle, "BACKGROUND", 0.267, 0.267, 0.267, 0.65)
-    tgBg:SetAllPoints()
-    local knob = ETex(toggle, "ARTWORK", 1, 1, 1, 0.5)
-    local knobSz = TG_H - TG_PAD * 2
-    local function Lerp(a, b, t) return a + (b - a) * t end
-    local animProgress = 0
-    local function ApplyToggleVisual(p)
-        local x = Lerp(TG_PAD, TG_W - TG_PAD - knobSz, p)
-        knob:ClearAllPoints()
-        knob:SetPoint("TOPLEFT", toggle, "TOPLEFT", x, -TG_PAD)
-        knob:SetSize(knobSz, knobSz)
-        tgBg:SetColorTexture(Lerp(0.267, ACCENT.r, p), Lerp(0.267, ACCENT.g, p),
-            Lerp(0.267, ACCENT.b, p), Lerp(0.65, 0.75, p))
-        knob:SetColorTexture(1, 1, 1, Lerp(0.5, 1, p))
-    end
-    editor.SyncAutoToggle = function()
-        animProgress = db.autoReset and 1 or 0
-        ApplyToggleVisual(animProgress)
-    end
-    toggle:SetScript("OnClick", function()
-        db.autoReset = not db.autoReset
-        local target = db.autoReset and 1 or 0
-        toggle:SetScript("OnUpdate", function(s, elapsed)
-            local dir = (target == 1) and 1 or -1
-            animProgress = animProgress + dir * (elapsed / TG_DUR)
-            if (dir == 1 and animProgress >= 1) or (dir == -1 and animProgress <= 0) then
-                animProgress = target
-                s:SetScript("OnUpdate", nil)
-            end
-            ApplyToggleVisual(animProgress)
+    local function EFooterToggle(getFn, setFn, tooltip)
+        local toggle = CreateFrame("Button", nil, footer)
+        toggle:SetSize(TG_W, TG_H)
+        local tgBg = ETex(toggle, "BACKGROUND", 0.267, 0.267, 0.267, 0.65)
+        tgBg:SetAllPoints()
+        local knob = ETex(toggle, "ARTWORK", 1, 1, 1, 0.5)
+        local knobSz = TG_H - TG_PAD * 2
+        local function Lerp(a, b, t) return a + (b - a) * t end
+        local animProgress = 0
+        local function Apply(p)
+            local x = Lerp(TG_PAD, TG_W - TG_PAD - knobSz, p)
+            knob:ClearAllPoints()
+            knob:SetPoint("TOPLEFT", toggle, "TOPLEFT", x, -TG_PAD)
+            knob:SetSize(knobSz, knobSz)
+            tgBg:SetColorTexture(Lerp(0.267, ACCENT.r, p), Lerp(0.267, ACCENT.g, p),
+                Lerp(0.267, ACCENT.b, p), Lerp(0.65, 0.75, p))
+            knob:SetColorTexture(1, 1, 1, Lerp(0.5, 1, p))
+        end
+        toggle.Sync = function()
+            animProgress = getFn() and 1 or 0
+            Apply(animProgress)
+        end
+        toggle:SetScript("OnClick", function()
+            setFn()
+            local target = getFn() and 1 or 0
+            toggle:SetScript("OnUpdate", function(s, elapsed)
+                local dir = (target == 1) and 1 or -1
+                animProgress = animProgress + dir * (elapsed / TG_DUR)
+                if (dir == 1 and animProgress >= 1) or (dir == -1 and animProgress <= 0) then
+                    animProgress = target
+                    s:SetScript("OnUpdate", nil)
+                end
+                Apply(animProgress)
+            end)
         end)
-    end)
-    local tgLabel = EFont(footer, 11, 0.53)
-    tgLabel:SetPoint("RIGHT", toggle, "LEFT", -8, 0)
-    tgLabel:SetText(L.AUTORESET_LABEL)
+        if tooltip then
+            toggle:HookScript("OnEnter", function(s)
+                GameTooltip:SetOwner(s, "ANCHOR_TOP")
+                GameTooltip:SetText(tooltip, 1, 1, 1, 1, true)
+                GameTooltip:Show()
+            end)
+            toggle:HookScript("OnLeave", function() GameTooltip:Hide() end)
+        end
+        return toggle
+    end
+
+    local arToggle = EFooterToggle(
+        function() return db.autoReset end,
+        function() db.autoReset = not db.autoReset end,
+        L.AUTORESET_TT)
+    arToggle:SetPoint("RIGHT", -12, 0)
+    local arLabel = EFont(footer, 11, 0.53)
+    arLabel:SetPoint("RIGHT", arToggle, "LEFT", -8, 0)
+    arLabel:SetText(L.AUTORESET_LABEL)
+
+    local cdToggle = EFooterToggle(
+        function() return db.skipBigCds end,
+        function()
+            db.skipBigCds = not db.skipBigCds
+            ResetRun()
+            Tracker_Refresh()
+            Print(db.skipBigCds and L.SKIPCD_ON or L.SKIPCD_OFF)
+        end,
+        L.SKIPCD_TT)
+    cdToggle:SetPoint("RIGHT", arLabel, "LEFT", -18, 0)
+    local cdLabel = EFont(footer, 11, 0.53)
+    cdLabel:SetPoint("RIGHT", cdToggle, "LEFT", -8, 0)
+    cdLabel:SetText(L.SKIPCD_LABEL)
+
+    editor.SyncAutoToggle = function()
+        arToggle.Sync()
+        cdToggle.Sync()
+    end
 
     -- Ridimensionabile: il minimo è il layout di default, grip in basso a destra.
     -- Larghezza extra ripartita tra le colonne: 20% sidebar, 30% spell, 50% sequenza.
@@ -2536,6 +2855,7 @@ local function BuildEditor()
         HideOpenerMenu()
         if presetMenu then presetMenu:Hide() end
         editor.SyncAutoToggle()
+        if editor.barSizeSlider then editor.barSizeSlider:SetValue(BarIconSize()) end
         knownSpells = BuildPickerPool()
         Editor_RefreshAll()
     end)
@@ -2930,6 +3250,12 @@ SlashCmdList.OPENERTRAINER = function(msg)
         db.autoReset = not db.autoReset
         if editor and editor.SyncAutoToggle then editor.SyncAutoToggle() end
         Print(db.autoReset and L.AUTORESET_ON or L.AUTORESET_OFF)
+    elseif msg == "skipcd" then
+        db.skipBigCds = not db.skipBigCds
+        if editor and editor.SyncAutoToggle then editor.SyncAutoToggle() end
+        ResetRun()
+        Tracker_Refresh()
+        Print(db.skipBigCds and L.SKIPCD_ON or L.SKIPCD_OFF)
     elseif msg == "status" then
         local opener, idx, list, spec = GetActiveOpener()
         Print(L.STATUS:format(
@@ -2945,10 +3271,25 @@ SlashCmdList.OPENERTRAINER = function(msg)
             id, tostring(nm), tostring(StepKnown(id)), tostring(SpellInBook(id)),
             b(IsSpellKnownOrOverridesKnown), b(IsPlayerSpell),
             b(C_SpellBook and C_SpellBook.IsSpellKnown),
-            talentSelected and "ok" or "NIL",
+            talentSelected and "ok" or "-",
             talentSelected and tostring(talentSelected[id]) or "-",
             (talentNodeNames and nmL) and tostring(talentNodeNames[nmL]) or "-",
             (passiveTalentNames and nmL) and tostring(passiveTalentNames[nmL]) or "-"))
+        -- stato cooldown per il flag skip
+        local big, baseSec = SpellBigCooldown(id)
+        local cdRaw = "-"
+        if C_Spell and C_Spell.GetSpellCooldown then
+            local okCd, ci = pcall(C_Spell.GetSpellCooldown, id)
+            if okCd and type(ci) == "table" then
+                cdRaw = ("start=%s dur=%s"):format(tostring(tonumber(ci.startTime)), tostring(tonumber(ci.duration)))
+            else
+                cdRaw = "ERR"
+            end
+        end
+        Print(("skipcd: flag=%s | baseCD=%.1fs big=%s | %s | onCD=%s | skippable(step)=%s"):format(
+            tostring(db.skipBigCds and true or false), baseSec, tostring(big), cdRaw,
+            tostring(SpellOnCooldown(id)),
+            tostring(StepAutoSkippable({ kind = "spell", spellID = id }))))
     else
         if tracker:IsShown() then tracker:Hide(); db.hidden = true
         else tracker:Show(); db.hidden = false end
@@ -2960,6 +3301,7 @@ end
 -- ---------------------------------------------------------------------------
 
 local lastPoolScan = 0
+local lastCdScan = 0
 
 local ev = CreateFrame("Frame")
 ev:SetScript("OnEvent", function(_, event, arg1, _, arg3)
@@ -2991,6 +3333,7 @@ ev:SetScript("OnEvent", function(_, event, arg1, _, arg3)
             -- cambi talenti: ricalcolo del "conosciuta/non talentata"
             pcall(ev.RegisterEvent, ev, "SPELLS_CHANGED")
             pcall(ev.RegisterEvent, ev, "TRAIT_CONFIG_UPDATED")
+            pcall(ev.RegisterEvent, ev, "SPELL_UPDATE_COOLDOWN")
             SeedDefaults()
             BuildTalentMap()
             -- DOPO BuildTalentMap: il riconoscimento dei marker passivi
@@ -3009,6 +3352,15 @@ ev:SetScript("OnEvent", function(_, event, arg1, _, arg3)
         if db.autoReset then
             ResetRun()
             Tracker_Refresh()
+        end
+    elseif event == "SPELL_UPDATE_COOLDOWN" then
+        -- skip eager anche mentre si è FERMI su uno step in cooldown lungo
+        if db.skipBigCds and GetTime() - lastCdScan > 1 then
+            lastCdScan = GetTime()
+            local opener = GetActiveOpener()
+            if opener and EagerSkipCurrent(opener.steps) then
+                Tracker_Refresh()
+            end
         end
     elseif event == "SPELLS_CHANGED" or event == "TRAIT_CONFIG_UPDATED" then
         BuildTalentMap()
