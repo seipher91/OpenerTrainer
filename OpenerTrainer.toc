@@ -3,7 +3,7 @@
 ## Notes: Learn your openers: spell checklist, green on cast, timing deltas between casts.
 ## Notes-itIT: Impara le opener: checklist di spell, verde al cast, delta temporali tra un cast e l'altro.
 ## Author: Seipher
-## Version: 1.2.4
+## Version: 1.3.0
 ## Category: Combat
 ## IconTexture: Interface\AddOns\OpenerTrainer\Media\icon
 ## X-Curse-Project-ID: 1658382

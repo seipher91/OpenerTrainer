@@ -4,7 +4,7 @@
 
 local ADDON_NAME = ...
 
-local VERSION = "1.2.4"
+local VERSION = "1.3.0"
 local ICON_PATH = "Interface\\AddOns\\OpenerTrainer\\Media\\icon"
 local ICON_FALLBACK = "Interface\\Icons\\INV_Misc_QuestionMark"
 local ICON_INFO = "Interface\\Icons\\INV_Misc_Note_01"
@@ -31,6 +31,8 @@ local L = {
     ADD_BY_ID = "Add by ID %s:",
     CLICK_CYCLE = "Click: cycle x1/x2/x3",
     INFO_STEP_TT = "Info step (always green)",
+    COMBO_HINT = "Right-click: merge with next step / split combo",
+    COMBO_NEED_NEXT = "No spell step below to merge with",
     CREATE_FIRST = "Create an opener first (New button).",
     NO_OPENERS_SPEC = "No openers for this spec: create one with New.",
     CHANGED_ABORT_DELETE = "Active opener changed meanwhile: deletion cancelled.",
@@ -93,6 +95,8 @@ if GetLocale() == "itIT" then
     L.ADD_BY_ID = "Aggiungi per ID %s:"
     L.CLICK_CYCLE = "Click: cicla x1/x2/x3"
     L.INFO_STEP_TT = "Step informativo (sempre verde)"
+    L.COMBO_HINT = "Click destro: unisci allo step successivo / separa la combo"
+    L.COMBO_NEED_NEXT = "Nessuno step spell successivo da unire"
     L.CREATE_FIRST = "Crea prima una opener (pulsante Nuova)."
     L.NO_OPENERS_SPEC = "Nessuna opener per questa spec: creane una con Nuova."
     L.CHANGED_ABORT_DELETE = "Opener cambiata nel frattempo: eliminazione annullata."
@@ -421,7 +425,7 @@ end
 -- Tracker: stato della run
 -- ---------------------------------------------------------------------------
 
-local run = { pointer = 1, castsInStep = 0, lastCastTime = nil, deltas = {}, intra = {}, done = {} }
+local run = { pointer = 1, castsInStep = 0, lastCastTime = nil, deltas = {}, intra = {}, done = {}, comboHits = {} }
 
 local Tracker_Refresh, Editor_RefreshSteps, Editor_RefreshSpells, Editor_RefreshHeader, Editor_RefreshAll, Bar_Refresh -- fwd
 local ExportOpener, ImportOpener, ApplyTalentString -- fwd (definiti dopo l'editor, usati dai suoi pulsanti)
@@ -433,7 +437,7 @@ local function AdvancePastInfo(steps)
 end
 
 local function ResetRun()
-    run = { pointer = 1, castsInStep = 0, lastCastTime = nil, deltas = {}, intra = {}, done = {} }
+    run = { pointer = 1, castsInStep = 0, lastCastTime = nil, deltas = {}, intra = {}, done = {}, comboHits = {} }
     local opener = GetActiveOpener()
     if opener then AdvancePastInfo(opener.steps) end
 end
@@ -795,8 +799,7 @@ local function ToggleOpenerMenu(anchor, growUp)
 end
 
 -- Match con gestione override (es. DH: Blade Dance -> Death Sweep in Metamorphosis)
-local function StepMatches(step, castID)
-    local sid = step.spellID
+local function SpellMatchesCast(sid, castID)
     if not sid then return false end
     if sid == castID then return true end
     if C_Spell and C_Spell.GetOverrideSpell then
@@ -811,7 +814,16 @@ local function StepMatches(step, castID)
     end
     -- Fallback per ID divergenti (seed, varianti): confronto per nome
     local n1, n2 = GetSpellName(sid), GetSpellName(castID)
-    if n1 and n2 and n1:lower() == n2:lower() then return true end
+    if n1 and n2 and not IsSecret(n1) and not IsSecret(n2)
+        and n1:lower() == n2:lower() then return true end
+    return false
+end
+
+local function StepMatches(step, castID)
+    if SpellMatchesCast(step.spellID, castID) then return true end
+    for _, extra in ipairs(step.also or {}) do
+        if SpellMatchesCast(extra, castID) then return true end
+    end
     return false
 end
 
@@ -859,6 +871,26 @@ local function StepKnown(spellID)
     return true
 end
 
+-- Etichetta dello step: nome (+ membri combo). step.label custom vince.
+local function StepLabel(step)
+    if step.label then return step.label end
+    local label = GetSpellName(step.spellID)
+    for _, extra in ipairs(step.also or {}) do
+        label = label .. " + " .. GetSpellName(extra)
+    end
+    return label
+end
+
+-- Rosso se QUALUNQUE membro dello step non è talentato
+local function StepMissing(step)
+    if step.kind == "info" then return false end
+    if not StepKnown(step.spellID) then return true end
+    for _, extra in ipairs(step.also or {}) do
+        if not StepKnown(extra) then return true end
+    end
+    return false
+end
+
 local function OnPlayerCast(spellID)
     spellID = ScrubID(spellID)
     if not spellID then return end
@@ -871,7 +903,52 @@ local function OnPlayerCast(spellID)
     AdvancePastInfo(steps)
     if run.pointer > #steps then return end
     local step = steps[run.pointer]
-    if not step or not StepMatches(step, spellID) then return end
+    if not step then return end
+
+    -- Step combo ("insieme o quasi"): completo quando TUTTE le spell del
+    -- gruppo sono state castate, in qualunque ordine e senza finestra
+    -- rigida (tollera chi non le preme davvero insieme)
+    if step.also and #step.also > 0 then
+        local hits = run.comboHits
+        local hit
+        if not hits.primary and SpellMatchesCast(step.spellID, spellID) then
+            hit = "primary"
+        else
+            for j, extra in ipairs(step.also) do
+                if not hits[j] and SpellMatchesCast(extra, spellID) then
+                    hit = j
+                    break
+                end
+            end
+        end
+        if hit == nil then return end
+        hits[hit] = true
+        local now = GetTime()
+        if not run.stepStart then
+            run.deltas[run.pointer] = run.lastCastTime and (now - run.lastCastTime) or 0
+            run.stepStart = now
+        end
+        run.lastCastTime = now
+        local complete = hits.primary
+        for j = 1, #step.also do
+            if not hits[j] then complete = false end
+        end
+        if complete then
+            -- intra = quanto "insieme" sono state premute (spread del gruppo)
+            local spread = now - (run.stepStart or now)
+            if spread > 0.05 then run.intra[run.pointer] = spread end
+            run.done[run.pointer] = true
+            run.pointer = run.pointer + 1
+            run.castsInStep = 0
+            run.stepStart = nil
+            run.comboHits = {}
+            AdvancePastInfo(steps)
+        end
+        Tracker_Refresh()
+        return
+    end
+
+    if not StepMatches(step, spellID) then return end
 
     local now = GetTime()
     local delta = run.lastCastTime and (now - run.lastCastTime) or 0
@@ -1035,6 +1112,9 @@ local function AcquireTrackerRow(i)
             GameTooltip:AddLine(L.INFO_STEP_TT, 0.6, 0.9, 1)
         elseif step.spellID then
             pcall(GameTooltip.SetSpellByID, GameTooltip, step.spellID)
+            for _, extra in ipairs(step.also or {}) do
+                GameTooltip:AddLine("+ " .. GetSpellName(extra), 0.8, 0.9, 1)
+            end
             if self.missing then
                 GameTooltip:AddLine(L.NOT_TALENTED, 1, 0.3, 0.3)
             end
@@ -1176,14 +1256,14 @@ function Tracker_Refresh()
             label = step.label or "Info"
             icon = step.icon or ICON_INFO
         else
-            label = step.label or GetSpellName(step.spellID)
+            label = StepLabel(step)
             if (step.count or 1) > 1 then label = label .. " x" .. step.count end
             icon = GetSpellIcon(step.spellID)
         end
         row.icon:SetTexture(icon)
         row.name:SetText(label)
 
-        local missing = step.kind ~= "info" and not StepKnown(step.spellID)
+        local missing = StepMissing(step)
         row.step, row.missing = step, missing
 
         local c
@@ -1205,6 +1285,17 @@ function Tracker_Refresh()
                 row.delta:SetFormattedText("|cff55dd55+%.2fs (%.2fs)|r", run.deltas[i] or 0, run.intra[i])
             else
                 row.delta:SetFormattedText("|cff55dd55+%.2fs|r", run.deltas[i] or 0)
+            end
+        elseif i == run.pointer and step.also and #step.also > 0 then
+            local hits = 0
+            if run.comboHits and run.comboHits.primary then hits = hits + 1 end
+            for j = 1, #step.also do
+                if run.comboHits and run.comboHits[j] then hits = hits + 1 end
+            end
+            if hits > 0 then
+                row.delta:SetFormattedText("|cffffee55%d/%d|r", hits, 1 + #step.also)
+            else
+                row.delta:SetText("")
             end
         elseif i == run.pointer and (step.count or 1) > 1 and run.castsInStep > 0 then
             row.delta:SetFormattedText("|cffffee55%d/%d|r", run.castsInStep, step.count)
@@ -1270,6 +1361,9 @@ local function AcquireBarIcon(i)
             GameTooltip:AddLine(L.INFO_STEP_TT, 0.6, 0.9, 1)
         elseif step.spellID then
             pcall(GameTooltip.SetSpellByID, GameTooltip, step.spellID)
+            for _, extra in ipairs(step.also or {}) do
+                GameTooltip:AddLine("+ " .. GetSpellName(extra), 0.8, 0.9, 1)
+            end
             if step.label then GameTooltip:AddLine(step.label, 0.7, 0.7, 0.7) end
             if self.missing then
                 GameTooltip:AddLine(L.NOT_TALENTED, 1, 0.3, 0.3)
@@ -1352,7 +1446,7 @@ function Bar_Refresh()
         end
         f.icon:SetTexture(icon)
 
-        local missing = step.kind ~= "info" and not StepKnown(step.spellID)
+        local missing = StepMissing(step)
         f.missing = missing
         local done = step.kind == "info" or run.done[i]
         local current = (i == run.pointer) and step.kind ~= "info"
@@ -1956,7 +2050,11 @@ local function AcquireStepRow(i)
         GameTooltip:SetOwner(s, "ANCHOR_RIGHT")
         if step and step.kind ~= "info" and step.spellID then
             pcall(GameTooltip.SetSpellByID, GameTooltip, step.spellID)
+            for _, extra in ipairs(step.also or {}) do
+                GameTooltip:AddLine("+ " .. GetSpellName(extra), 0.8, 0.9, 1)
+            end
             GameTooltip:AddLine(L.CLICK_CYCLE, 0.6, 0.9, 1)
+            GameTooltip:AddLine(L.COMBO_HINT, 0.6, 0.9, 1)
         else
             GameTooltip:SetText(L.INFO_STEP_TT)
         end
@@ -1967,11 +2065,42 @@ local function AcquireStepRow(i)
         s.grip:SetTextColor(1, 1, 1, 0.30)
         GameTooltip:Hide()
     end)
-    row:SetScript("OnClick", function(s)
+    row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    row:SetScript("OnClick", function(s, button)
         if dragState then return end
         local opener = GetActiveOpener()
         local step = opener and opener.steps[s.index]
-        if step and step.kind ~= "info" then
+        if not step or step.kind == "info" then return end
+        if button == "RightButton" then
+            if step.also and #step.also > 0 then
+                -- split: i membri tornano step singoli subito dopo
+                for j = #step.also, 1, -1 do
+                    table.insert(opener.steps, s.index + 1,
+                        { kind = "spell", spellID = step.also[j], count = 1 })
+                end
+                step.also = nil
+            else
+                -- merge con lo step successivo (solo spell, non info)
+                local nxt = opener.steps[s.index + 1]
+                if not nxt or nxt.kind == "info" then
+                    Print(L.COMBO_NEED_NEXT)
+                    return
+                end
+                step.also = step.also or {}
+                step.also[#step.also + 1] = nxt.spellID
+                for _, e in ipairs(nxt.also or {}) do
+                    step.also[#step.also + 1] = e
+                end
+                step.count = 1
+                table.remove(opener.steps, s.index + 1)
+            end
+            ResetRun()
+            Tracker_Refresh()
+            Editor_RefreshSteps()
+            return
+        end
+        -- click sinistro: cicla x1/x2/x3 (non sulle combo)
+        if not (step.also and #step.also > 0) then
             step.count = ((step.count or 1) % 3) + 1
             ResetRun()
             Tracker_Refresh()
@@ -1994,7 +2123,7 @@ local function AcquireStepRow(i)
                 g.label:SetText(step.label or "Info")
             else
                 g.icon:SetTexture(GetSpellIcon(step.spellID))
-                g.label:SetText(GetSpellName(step.spellID))
+                g.label:SetText(StepLabel(step))
             end
         end)
     editorStepRows[i] = row
@@ -2019,13 +2148,13 @@ function Editor_RefreshSteps()
             row.label:SetTextColor(1, 1, 1, 0.85)
         else
             row.icon:SetTexture(GetSpellIcon(step.spellID))
-            local txt = i .. ". " .. GetSpellName(step.spellID)
+            local txt = i .. ". " .. StepLabel(step)
             if (step.count or 1) > 1 then
                 txt = txt .. " |cffffee55x" .. step.count .. "|r"
             end
             row.label:SetText(txt)
             -- rosso anche qui, come in tracker/barra/picker
-            if not StepKnown(step.spellID) then
+            if StepMissing(step) then
                 row.label:SetTextColor(1, 0.35, 0.35, 1)
             else
                 row.label:SetTextColor(1, 1, 1, 0.85)
@@ -2454,6 +2583,9 @@ function ExportOpener(opener)
             if step.label then
                 parts[#parts + 1] = "L" .. HexEncode(step.label)
             end
+            for _, extra in ipairs(step.also or {}) do
+                parts[#parts + 1] = "J" .. tostring(extra)
+            end
         end
     end
     return table.concat(parts)
@@ -2525,6 +2657,19 @@ function ImportOpener(str)
             if cur then cur.count = math.max(1, math.min(9, tonumber(payload) or 1)) end
         elseif marker == "L" then
             if cur then cur.label = HexDecode(payload) end
+        elseif marker == "J" then
+            -- membro combo: spell da premere insieme (o quasi) alla precedente
+            local id = tonumber(payload)
+            if id and SpellExists(id) and not SpellIsPassive(id) then
+                if cur then
+                    cur.also = cur.also or {}
+                    cur.also[#cur.also + 1] = id
+                else
+                    cur = { kind = "spell", spellID = id, count = 1 }
+                end
+            else
+                skipped = skipped + 1
+            end
         elseif marker == "I" then
             flush()
             steps[#steps + 1] = { kind = "info", label = HexDecode(payload) or "Info" }

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0 (2026-08-19)
+
+### Added
+- **Combo steps**: a step can now hold multiple spells meant to be pressed together (or nearly together), e.g. Reaper's Mark + Pillar of Frost. The step completes once all spells in the group are cast, in any order and with no strict time window — pressing them a GCD apart is fine. The current combo shows yellow progress (1/2), the recorded delta is measured to the first cast of the group, and the group's spread (how "together" you pressed them) is shown in parentheses. Tooltips list all members.
+- **Editor**: right-click a sequence step to merge it with the next one into a combo; right-click a combo to split it back into single steps.
+- Export/import format: combo members use the new `J` marker. Fully backward compatible — older versions ignore unknown markers and import the primary spell.
+
+### Changed
+- Frost Death Knight presets rebuilt as "12.1 - ST Deathbringer" and "12.1 - AoE Deathbringer" with combo steps: Empower Rune Weapon → Reaper's Mark + Pillar of Frost → Breath of Sindragosa + Raise Dead → Frostwyrm's Fury → Obliterate (ST) / Frostscythe (AoE) → Empower Rune Weapon.
+
 ## 1.2.4 (2026-08-18)
 
 ### Fixed
