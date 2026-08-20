@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0 (2026-08-20)
+
+### Added
+- **Classic support**: OpenerTrainer now runs on Classic Era (1.15), Burning Crusade Anniversary (2.5) and Mists of Pandaria Classic (5.5) alongside retail — one addon, per-flavor TOC files.
+- Classic spellbook enumeration via the legacy APIs (`GetNumSpellTabs`/`GetSpellBookItemInfo`); multiple spell ranks collapse by name and the cast matcher already matches by name, so any rank completes the step.
+- On Classic, retail-only features degrade gracefully: no talent-string support (the Talents button is hidden), no "untalented" red marking, no built-in presets (they are retail 12.1 openers).
+
 ## 1.4.0 (2026-08-19)
 
 ### Added

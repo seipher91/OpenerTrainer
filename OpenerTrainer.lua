@@ -4,7 +4,7 @@
 
 local ADDON_NAME = ...
 
-local VERSION = "1.4.0"
+local VERSION = "1.5.0"
 local ICON_PATH = "Interface\\AddOns\\OpenerTrainer\\Media\\icon"
 local ICON_FALLBACK = "Interface\\Icons\\INV_Misc_QuestionMark"
 local ICON_INFO = "Interface\\Icons\\INV_Misc_Note_01"
@@ -289,44 +289,63 @@ end
 
 local function EnumerateKnownSpells()
     local out, seen, seenNames = {}, {}, {}
-    if not (C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines
-        and C_SpellBook.GetSpellBookSkillLineInfo and C_SpellBook.GetSpellBookItemInfo) then
-        return out
+    -- Dedup anche per NOME: il gioco tiene ID interni diversi per la stessa
+    -- spell mostrata (rank/varianti)
+    local function Add(sid, nm, icon)
+        if not sid or seen[sid] then return end
+        nm = nm or GetSpellName(sid)
+        if PickerBlacklisted(sid, nm) then return end
+        local lname = nm:lower()
+        if seenNames[lname] then return end
+        seen[sid] = true
+        seenNames[lname] = true
+        out[#out + 1] = { spellID = sid, name = nm, icon = icon or GetSpellIcon(sid) }
     end
-    local bank = (Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0
-    local spellType = Enum and Enum.SpellBookItemType and Enum.SpellBookItemType.Spell
-    local okLines, numLines = pcall(C_SpellBook.GetNumSpellBookSkillLines)
-    if not okLines or type(numLines) ~= "number" then return out end
-    for line = 1, numLines do
-        local okLine, li = pcall(C_SpellBook.GetSpellBookSkillLineInfo, line)
-        if okLine and type(li) == "table" and not li.offSpecID then
-            local offset = tonumber(li.itemIndexOffset) or 0
-            local count = tonumber(li.numSpellBookItems) or 0
-            for j = 1, count do
-                local okItem, info = pcall(C_SpellBook.GetSpellBookItemInfo, offset + j, bank)
-                if okItem and type(info) == "table" then
-                    local sid = ScrubID(info.spellID)
-                    local isSpell = (spellType == nil) or (tonumber(info.itemType) == spellType)
-                    if sid and C_SpellBook.IsAutoAttackSpellBookItem then
-                        local okA, isAuto = pcall(C_SpellBook.IsAutoAttackSpellBookItem, offset + j, bank)
-                        if okA and isAuto then sid = nil end
-                    end
-                    if sid and PickerBlacklisted(sid, info.name) then sid = nil end
-                    if sid and isSpell and not info.isPassive and not seen[sid] then
-                        local nm = info.name or GetSpellName(sid)
-                        local lname = nm:lower()
-                        -- Dedup anche per NOME: il gioco tiene ID interni
-                        -- diversi per la stessa spell mostrata (rank/varianti)
-                        if not seenNames[lname] then
-                            seen[sid] = true
-                            seenNames[lname] = true
-                            out[#out + 1] = {
-                                spellID = sid,
-                                name = nm,
-                                icon = info.iconID or GetSpellIcon(sid),
-                            }
+    if C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines
+        and C_SpellBook.GetSpellBookSkillLineInfo and C_SpellBook.GetSpellBookItemInfo then
+        local bank = (Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0
+        local spellType = Enum and Enum.SpellBookItemType and Enum.SpellBookItemType.Spell
+        local okLines, numLines = pcall(C_SpellBook.GetNumSpellBookSkillLines)
+        if not (okLines and type(numLines) == "number") then numLines = 0 end
+        for line = 1, numLines do
+            local okLine, li = pcall(C_SpellBook.GetSpellBookSkillLineInfo, line)
+            if okLine and type(li) == "table" and not li.offSpecID then
+                local offset = tonumber(li.itemIndexOffset) or 0
+                local count = tonumber(li.numSpellBookItems) or 0
+                for j = 1, count do
+                    local okItem, info = pcall(C_SpellBook.GetSpellBookItemInfo, offset + j, bank)
+                    if okItem and type(info) == "table" then
+                        local sid = ScrubID(info.spellID)
+                        local isSpell = (spellType == nil) or (tonumber(info.itemType) == spellType)
+                        if sid and C_SpellBook.IsAutoAttackSpellBookItem then
+                            local okA, isAuto = pcall(C_SpellBook.IsAutoAttackSpellBookItem, offset + j, bank)
+                            if okA and isAuto then sid = nil end
+                        end
+                        if sid and isSpell and not info.isPassive then
+                            Add(sid, info.name, info.iconID)
                         end
                     end
+                end
+            end
+        end
+    elseif type(GetNumSpellTabs) == "function" and type(GetSpellBookItemInfo) == "function" then
+        -- Classic (Era/TBC/MoP): C_SpellBook non ha l'enumerazione — si usano
+        -- le API legacy globali, rimosse dal retail in 11.0.
+        -- I rank multipli collassano per nome (il matcher confronta per nome).
+        local bookType = BOOKTYPE_SPELL or "spell"
+        for tab = 1, tonumber(GetNumSpellTabs()) or 0 do
+            local _, _, offset, numSlots = GetSpellTabInfo(tab)
+            offset = tonumber(offset) or 0
+            for j = 1, tonumber(numSlots) or 0 do
+                local slot = offset + j
+                local okI, itemType, id = pcall(GetSpellBookItemInfo, slot, bookType)
+                if okI and itemType == "SPELL" then
+                    local passive = false
+                    if type(IsPassiveSpell) == "function" then
+                        local okP, p = pcall(IsPassiveSpell, slot, bookType)
+                        passive = (okP and p) and true or false
+                    end
+                    if not passive then Add(ScrubID(id)) end
                 end
             end
         end
@@ -2706,6 +2725,8 @@ local function BuildEditor()
     presetsBtn = FooterBtn(L.PRESETS, function()
         TogglePresetMenu(presetsBtn)
     end)
+    -- Talenti in stile loadout: solo retail (sui classic C_ClassTalents non esiste)
+    if C_ClassTalents and C_ClassTalents.ImportLoadout then
     FooterBtn(L.TALENTS, function()
         local opener, idx, _, spec = GetActiveOpener()
         if not opener then Print(L.CREATE_FIRST) return end
@@ -2738,6 +2759,7 @@ local function BuildEditor()
             end,
         })
     end)
+    end -- gate C_ClassTalents
 
     -- Toggle animato (40x20, track #444 -> accent, knob bianco) — factory:
     -- ne servono due (auto-reset e skip CD lunghi)
